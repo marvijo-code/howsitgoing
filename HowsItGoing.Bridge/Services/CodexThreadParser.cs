@@ -34,79 +34,100 @@ public sealed class CodexThreadParser
             }
         }
 
-        string? lastAgentMessage = null;
-        DateTimeOffset? completedAt = null;
-        var hasTaskComplete = false;
-
-        await using var stream = File.OpenRead(rolloutPath);
-        using var reader = new StreamReader(stream);
-        while (!reader.EndOfStream)
+        CodexRuntimeState state;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            string? lastAgentMessage = null;
+            DateTimeOffset? completedAt = null;
+            var hasTaskComplete = false;
 
-            var line = await reader.ReadLineAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(line))
+            await using var stream = new FileStream(
+                rolloutPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            while (!reader.EndOfStream)
             {
-                continue;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            try
-            {
-                using var document = JsonDocument.Parse(line);
-                var root = document.RootElement;
-                if (!root.TryGetProperty("type", out var rootType) ||
-                    rootType.ValueKind != JsonValueKind.String ||
-                    !root.TryGetProperty("payload", out var payload))
+                var line = await reader.ReadLineAsync(cancellationToken);
+                if (string.IsNullOrWhiteSpace(line))
                 {
                     continue;
                 }
 
-                var entryType = rootType.GetString();
-                if (entryType == "event_msg" &&
-                    payload.TryGetProperty("type", out var payloadType) &&
-                    payloadType.ValueKind == JsonValueKind.String)
+                try
                 {
-                    var payloadTypeValue = payloadType.GetString();
-                    if (payloadTypeValue == "agent_message" &&
-                        payload.TryGetProperty("message", out var messageValue) &&
-                        messageValue.ValueKind == JsonValueKind.String)
+                    using var document = JsonDocument.Parse(line);
+                    var root = document.RootElement;
+                    if (!root.TryGetProperty("type", out var rootType) ||
+                        rootType.ValueKind != JsonValueKind.String ||
+                        !root.TryGetProperty("payload", out var payload))
                     {
-                        lastAgentMessage = messageValue.GetString();
+                        continue;
                     }
-                    else if (payloadTypeValue == "task_complete")
+
+                    var entryType = rootType.GetString();
+                    if (entryType == "event_msg" &&
+                        payload.TryGetProperty("type", out var payloadType) &&
+                        payloadType.ValueKind == JsonValueKind.String)
                     {
-                        hasTaskComplete = true;
-                        completedAt = TryReadTimestamp(root);
-                        if (payload.TryGetProperty("last_agent_message", out var lastAgentMessageValue) &&
-                            lastAgentMessageValue.ValueKind == JsonValueKind.String &&
-                            !string.IsNullOrWhiteSpace(lastAgentMessageValue.GetString()))
+                        var payloadTypeValue = payloadType.GetString();
+                        if (payloadTypeValue == "agent_message" &&
+                            payload.TryGetProperty("message", out var messageValue) &&
+                            messageValue.ValueKind == JsonValueKind.String)
                         {
-                            lastAgentMessage = lastAgentMessageValue.GetString();
+                            lastAgentMessage = messageValue.GetString();
+                        }
+                        else if (payloadTypeValue == "task_complete")
+                        {
+                            hasTaskComplete = true;
+                            completedAt = TryReadTimestamp(root);
+                            if (payload.TryGetProperty("last_agent_message", out var lastAgentMessageValue) &&
+                                lastAgentMessageValue.ValueKind == JsonValueKind.String &&
+                                !string.IsNullOrWhiteSpace(lastAgentMessageValue.GetString()))
+                            {
+                                lastAgentMessage = lastAgentMessageValue.GetString();
+                            }
+                        }
+                    }
+                    else if (entryType == "response_item" &&
+                             payload.TryGetProperty("type", out var responseType) &&
+                             responseType.ValueKind == JsonValueKind.String &&
+                             responseType.GetString() == "message" &&
+                             payload.TryGetProperty("role", out var roleValue) &&
+                             roleValue.ValueKind == JsonValueKind.String &&
+                             roleValue.GetString() == "assistant")
+                    {
+                        var assistantText = TryExtractAssistantText(payload);
+                        if (!string.IsNullOrWhiteSpace(assistantText))
+                        {
+                            lastAgentMessage = assistantText;
                         }
                     }
                 }
-                else if (entryType == "response_item" &&
-                         payload.TryGetProperty("type", out var responseType) &&
-                         responseType.ValueKind == JsonValueKind.String &&
-                         responseType.GetString() == "message" &&
-                         payload.TryGetProperty("role", out var roleValue) &&
-                         roleValue.ValueKind == JsonValueKind.String &&
-                         roleValue.GetString() == "assistant")
+                catch (JsonException)
                 {
-                    var assistantText = TryExtractAssistantText(payload);
-                    if (!string.IsNullOrWhiteSpace(assistantText))
-                    {
-                        lastAgentMessage = assistantText;
-                    }
+                    // Codex exec emits warning lines before JSON lines.
                 }
             }
-            catch (JsonException)
+
+            state = new CodexRuntimeState(ComputeStatus(archived, hasTaskComplete, updatedAt), lastAgentMessage, completedAt);
+        }
+        catch (IOException)
+        {
+            lock (_cacheLock)
             {
-                // Codex exec emits warning lines before JSON lines.
+                if (_cache.TryGetValue(rolloutPath, out var cached))
+                {
+                    return cached.State;
+                }
             }
+
+            return new CodexRuntimeState(ComputeStatus(archived, false, updatedAt), null, null);
         }
 
-        var state = new CodexRuntimeState(ComputeStatus(archived, hasTaskComplete, updatedAt), lastAgentMessage, completedAt);
         lock (_cacheLock)
         {
             _cache[rolloutPath] = new CachedRuntimeState(info.Length, info.LastWriteTimeUtc, state);

@@ -11,8 +11,33 @@ public sealed class GitHubMonitorOptions
     public static string ResolveMonitoredRepositoryPath(string contentRootPath, string? configuredPath)
     {
         var configured = string.IsNullOrWhiteSpace(configuredPath) ? ".." : configuredPath;
+        if (configured is "." or "..")
+        {
+            var discovered = TryFindNearestGitRepository(contentRootPath);
+            if (!string.IsNullOrWhiteSpace(discovered))
+            {
+                return discovered;
+            }
+        }
+
         var expanded = Environment.ExpandEnvironmentVariables(configured);
         return Path.GetFullPath(Path.IsPathRooted(expanded) ? expanded : Path.Combine(contentRootPath, expanded));
+    }
+
+    private static string? TryFindNearestGitRepository(string startPath)
+    {
+        var current = new DirectoryInfo(Path.GetFullPath(startPath));
+        while (current is not null)
+        {
+            if (Directory.Exists(Path.Combine(current.FullName, ".git")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
     }
 
     public static string? ResolveRemoteUrl(string repositoryPath)

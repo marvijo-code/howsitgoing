@@ -24,34 +24,29 @@ public sealed class AgentLaunchService
             throw new DirectoryNotFoundException($"Repo path does not exist: {repoPath}");
         }
 
-        var startInfo = new ProcessStartInfo
+        var arguments = new List<string>
         {
-            FileName = "codex",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = repoPath
+            "exec",
+            "--json",
+            "--full-auto",
+            "-C",
+            repoPath
         };
-
-        startInfo.ArgumentList.Add("exec");
-        startInfo.ArgumentList.Add("--json");
-        startInfo.ArgumentList.Add("--full-auto");
-        startInfo.ArgumentList.Add("-C");
-        startInfo.ArgumentList.Add(repoPath);
 
         if (!Directory.Exists(Path.Combine(repoPath, ".git")) && request.AllowOutsideGitRepo)
         {
-            startInfo.ArgumentList.Add("--skip-git-repo-check");
+            arguments.Add("--skip-git-repo-check");
         }
 
         if (!string.IsNullOrWhiteSpace(request.Model))
         {
-            startInfo.ArgumentList.Add("--model");
-            startInfo.ArgumentList.Add(request.Model);
+            arguments.Add("--model");
+            arguments.Add(request.Model);
         }
 
-        startInfo.ArgumentList.Add(request.Prompt);
+        arguments.Add(request.Prompt);
+
+        var startInfo = CreateStartInfo(repoPath, arguments);
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         var threadStarted = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -165,5 +160,93 @@ public sealed class AgentLaunchService
         {
             process.Dispose();
         }
+    }
+
+    private static ProcessStartInfo CreateStartInfo(string repoPath, IReadOnlyList<string> arguments)
+    {
+        var executablePath = ResolveExecutableOnPath("codex");
+        if (executablePath is null)
+        {
+            throw new FileNotFoundException("Could not find 'codex' on PATH.");
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = repoPath
+        };
+
+        if (OperatingSystem.IsWindows() &&
+            (executablePath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
+             executablePath.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)))
+        {
+            startInfo.FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+            startInfo.Arguments = $"/d /s /c \"{BuildCommandLine(executablePath, arguments)}\"";
+            return startInfo;
+        }
+
+        startInfo.FileName = executablePath;
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        return startInfo;
+    }
+
+    private static string? ResolveExecutableOnPath(string command)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var extensions = OperatingSystem.IsWindows()
+            ? new[] { ".cmd", ".bat", ".exe", string.Empty }
+            : new[] { string.Empty };
+
+        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (var extension in extensions)
+            {
+                var candidate = Path.Combine(directory, command + extension);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string BuildCommandLine(string executablePath, IReadOnlyList<string> arguments)
+    {
+        var parts = new List<string>(arguments.Count + 1)
+        {
+            QuoteForCmd(executablePath)
+        };
+
+        parts.AddRange(arguments.Select(QuoteForCmd));
+        return string.Join(' ', parts);
+    }
+
+    private static string QuoteForCmd(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "\"\"";
+        }
+
+        if (!value.Any(ch => char.IsWhiteSpace(ch) || ch is '"' or '^' or '&' or '|' or '<' or '>'))
+        {
+            return value;
+        }
+
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 }

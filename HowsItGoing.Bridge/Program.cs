@@ -49,7 +49,7 @@ app.MapGet("/api/sessions", async (
     string? query,
     string? status,
     string? source,
-    bool includeArchived,
+    bool? includeArchived,
     CodexSessionService sessions,
     CancellationToken cancellationToken) =>
 {
@@ -60,7 +60,7 @@ app.MapGet("/api/sessions", async (
         parsedStatus = statusValue;
     }
 
-    var results = await sessions.GetSessionsAsync(query, parsedStatus, source, includeArchived, cancellationToken);
+    var results = await sessions.GetSessionsAsync(query, parsedStatus, source, includeArchived ?? false, cancellationToken);
     return Results.Ok(results);
 });
 
