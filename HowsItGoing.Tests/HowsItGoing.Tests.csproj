@@ -15,6 +15,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\HowsItGoing\HowsItGoing.csproj" />
+    <ProjectReference Include="..\HowsItGoing.Core\HowsItGoing.Core.csproj" />
   </ItemGroup>
 </Project>

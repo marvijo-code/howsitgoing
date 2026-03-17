@@ -1,9 +1,10 @@
 <Project Sdk="Uno.Sdk">
   <ItemGroup>
+    <ProjectReference Include="..\HowsItGoing.Core\HowsItGoing.Core.csproj" />
     <ProjectReference Include="..\HowsItGoing.Contracts\HowsItGoing.Contracts.csproj" />
   </ItemGroup>
   <PropertyGroup>
-    <TargetFrameworks>net9.0-android;net9.0</TargetFrameworks>
+    <TargetFrameworks>net9.0-android</TargetFrameworks>
 
     <OutputType>Exe</OutputType>
     <UnoSingleProject>true</UnoSingleProject>
