@@ -128,12 +128,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        var settings = await _settingsStore.LoadAsync(cancellationToken);
-        BridgeBaseUrl = settings.BridgeBaseUrl;
-        MonitoringEnabled = settings.MonitoringEnabled;
-        AgentRepoPath = settings.AgentRepoPath;
-        AgentModel = settings.AgentModel;
-        await RefreshAsync(cancellationToken);
+        try
+        {
+            var settings = await _settingsStore.LoadAsync(cancellationToken);
+            BridgeBaseUrl = settings.BridgeBaseUrl;
+            MonitoringEnabled = settings.MonitoringEnabled;
+            AgentRepoPath = settings.AgentRepoPath;
+            AgentModel = settings.AgentModel;
+            await RefreshAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            StatusBanner = $"Initialization failed: {ex.Message}";
+        }
     }
 
     public async Task SaveSettingsAsync(CancellationToken cancellationToken = default)

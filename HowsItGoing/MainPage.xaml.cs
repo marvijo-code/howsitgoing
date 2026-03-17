@@ -19,7 +19,6 @@ public sealed partial class MainPage : Page
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
         await ViewModel.InitializeAsync();
-        await MonitoringServiceCoordinator.SyncAsync(ViewModel.MonitoringEnabled);
     }
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)

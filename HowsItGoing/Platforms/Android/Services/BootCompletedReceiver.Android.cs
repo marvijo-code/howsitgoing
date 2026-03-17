@@ -10,10 +10,17 @@ public sealed class BootCompletedReceiver : BroadcastReceiver
 {
     public override void OnReceive(Context? context, Intent? intent)
     {
-        var settings = new AppSettingsStore().LoadAsync().GetAwaiter().GetResult();
-        if (settings.MonitoringEnabled)
+        try
         {
-            MonitoringServiceCoordinator.SyncAsync(true).GetAwaiter().GetResult();
+            var settings = new AppSettingsStore().LoadAsync().GetAwaiter().GetResult();
+            if (settings.MonitoringEnabled)
+            {
+                MonitoringServiceCoordinator.SyncAsync(true).GetAwaiter().GetResult();
+            }
+        }
+        catch
+        {
+            // Ignore boot-time startup failures; the user can re-enable monitoring from the app.
         }
     }
 }
