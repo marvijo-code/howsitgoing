@@ -10,6 +10,8 @@ public sealed class BridgeApiClient
     {
         PropertyNameCaseInsensitive = true
     };
+    private static readonly string[] AndroidBridgeCandidates = ["http://127.0.0.1:5217/", "http://10.0.2.2:5217/", "http://localhost:5217/"];
+    private static readonly string[] DesktopBridgeCandidates = ["http://127.0.0.1:5217/", "http://localhost:5217/"];
 
     private readonly AppSettingsStore _settingsStore;
 
@@ -73,8 +75,11 @@ public sealed class BridgeApiClient
     public async Task<StartCodexRunResponse?> StartAgentRunAsync(StartCodexRunRequest request, CancellationToken cancellationToken = default)
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
-        using var client = CreateClient(settings.BridgeBaseUrl);
-        using var response = await client.PostAsJsonAsync("/api/agent/start-run", request, SerializerOptions, cancellationToken);
+        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+        using var client = CreateClient(baseUrl);
+        using var response = await SendWithRetryAsync(
+            token => client.PostAsJsonAsync("/api/agent/start-run", request, SerializerOptions, token),
+            cancellationToken);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonSerializer.DeserializeAsync<StartCodexRunResponse>(stream, SerializerOptions, cancellationToken);
@@ -83,18 +88,112 @@ public sealed class BridgeApiClient
     private async Task<T?> GetAsync<T>(string relativeUrl, CancellationToken cancellationToken)
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
-        using var client = CreateClient(settings.BridgeBaseUrl);
-        using var response = await client.GetAsync(relativeUrl, cancellationToken);
+        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+        using var client = CreateClient(baseUrl);
+        using var response = await SendWithRetryAsync(
+            token => client.GetAsync(relativeUrl, token),
+            cancellationToken);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonSerializer.DeserializeAsync<T>(stream, SerializerOptions, cancellationToken);
     }
 
-    private static HttpClient CreateClient(string baseUrl) =>
+    private async Task<string> ResolveBaseUrlAsync(AppSettings settings, CancellationToken cancellationToken)
+    {
+        var configuredBaseUrl = NormalizeBaseUrl(settings.BridgeBaseUrl);
+        var candidates = BuildCandidateBaseUrls(configuredBaseUrl);
+
+        if (candidates.Count == 1)
+        {
+            return configuredBaseUrl;
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (!await IsReachableAsync(candidate, cancellationToken))
+            {
+                continue;
+            }
+
+            if (!string.Equals(candidate, configuredBaseUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                await _settingsStore.SaveAsync(settings with { BridgeBaseUrl = candidate.TrimEnd('/') }, cancellationToken);
+            }
+
+            return candidate;
+        }
+
+        return configuredBaseUrl;
+    }
+
+    private static IReadOnlyList<string> BuildCandidateBaseUrls(string configuredBaseUrl)
+    {
+        if (!ShouldTryFallbacks(configuredBaseUrl))
+        {
+            return [configuredBaseUrl];
+        }
+
+        var candidates = new List<string> { configuredBaseUrl };
+        foreach (var candidate in GetFallbackBaseUrls())
+        {
+            if (!candidates.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            {
+                candidates.Add(candidate);
+            }
+        }
+
+        return candidates;
+    }
+
+    private static bool ShouldTryFallbacks(string configuredBaseUrl)
+    {
+        if (!Uri.TryCreate(configuredBaseUrl, UriKind.Absolute, out var uri))
+        {
+            return true;
+        }
+
+        return uri.Host.Equals("10.0.2.2", StringComparison.OrdinalIgnoreCase) ||
+               uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+               uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> GetFallbackBaseUrls() =>
+        OperatingSystem.IsAndroid() ? AndroidBridgeCandidates : DesktopBridgeCandidates;
+
+    private static async Task<bool> IsReachableAsync(string baseUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = CreateClient(baseUrl, TimeSpan.FromSeconds(2));
+            using var response = await client.GetAsync("/healthz", cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<HttpResponseMessage> SendWithRetryAsync(
+        Func<CancellationToken, Task<HttpResponseMessage>> operation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await operation(cancellationToken);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+            return await operation(cancellationToken);
+        }
+    }
+
+    private static HttpClient CreateClient(string baseUrl, TimeSpan? timeout = null) =>
         new()
         {
             BaseAddress = new Uri(NormalizeBaseUrl(baseUrl)),
-            Timeout = TimeSpan.FromSeconds(15)
+            Timeout = timeout ?? TimeSpan.FromSeconds(30)
         };
 
     private static string BuildEndpoint(string path, IReadOnlyDictionary<string, string?> query)
@@ -111,7 +210,7 @@ public sealed class BridgeApiClient
     {
         if (string.IsNullOrWhiteSpace(baseUrl))
         {
-            return "http://10.0.2.2:5217/";
+            return "http://127.0.0.1:5217/";
         }
 
         return baseUrl.EndsWith("/", StringComparison.Ordinal) ? baseUrl : baseUrl + "/";

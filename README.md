@@ -26,6 +26,7 @@
 2. Build or run the app against Android:
    `dotnet build ./HowsItGoing/HowsItGoing.csproj -f net9.0-android`
 3. In the app, point the bridge URL at:
+   - `http://127.0.0.1:5217` when using `adb reverse tcp:5217 tcp:5217` on a physical Android device
    - `http://10.0.2.2:5217` for an Android emulator
    - `http://<your-pc-lan-ip>:5217` for a physical device on the same network
 

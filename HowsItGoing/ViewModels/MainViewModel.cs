@@ -11,7 +11,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly BridgeApiClient _bridgeApiClient;
     private readonly AppSettingsStore _settingsStore;
-    private string _bridgeBaseUrl = "http://10.0.2.2:5217";
+    private string _bridgeBaseUrl = "http://127.0.0.1:5217";
     private string _searchQuery = string.Empty;
     private string _selectedStatus = "All";
     private string _selectedSource = "All";
@@ -186,11 +186,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 : FormatUpdateSummary(updateInfo);
             ReleaseUrl = updateInfo?.AssetDownloadUrl;
 
+            var latestSettings = await _settingsStore.LoadAsync(cancellationToken);
+            BridgeBaseUrl = latestSettings.BridgeBaseUrl;
+
             StatusBanner = $"Loaded {Sessions.Count} Codex sessions and {Notifications.Count} notifications.";
         }
         catch (Exception ex)
         {
-            StatusBanner = $"Refresh failed: {ex.Message}";
+            StatusBanner = FormatRequestFailure("Refresh failed", ex);
         }
     }
 
@@ -209,8 +212,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            LaunchResult = $"Launch failed: {ex.Message}";
+            LaunchResult = FormatRequestFailure("Launch failed", ex);
         }
+    }
+
+    private string FormatRequestFailure(string prefix, Exception exception)
+    {
+        if (exception is HttpRequestException || exception is TaskCanceledException)
+        {
+            return $"{prefix}: bridge unreachable at {BridgeBaseUrl}. Use adb reverse to 5217 or set your PC LAN IP.";
+        }
+
+        return $"{prefix}: {exception.Message}";
     }
 
     private static string FormatRepositorySummary(RepositoryStatusDto status)

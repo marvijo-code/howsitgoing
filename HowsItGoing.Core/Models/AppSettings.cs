@@ -2,7 +2,7 @@ namespace HowsItGoing.Models;
 
 public sealed record AppSettings
 {
-    public string BridgeBaseUrl { get; init; } = "http://10.0.2.2:5217";
+    public string BridgeBaseUrl { get; init; } = "http://127.0.0.1:5217";
 
     public bool MonitoringEnabled { get; init; } = true;
 

@@ -4,23 +4,12 @@ using HowsItGoing.Services;
 
 namespace HowsItGoing.Droid;
 
-[BroadcastReceiver(Enabled = true, Exported = true)]
+[BroadcastReceiver(Enabled = false, Exported = false)]
 [IntentFilter([Intent.ActionBootCompleted])]
 public sealed class BootCompletedReceiver : BroadcastReceiver
 {
     public override void OnReceive(Context? context, Intent? intent)
     {
-        try
-        {
-            var settings = new AppSettingsStore().LoadAsync().GetAwaiter().GetResult();
-            if (settings.MonitoringEnabled)
-            {
-                MonitoringServiceCoordinator.SyncAsync(true).GetAwaiter().GetResult();
-            }
-        }
-        catch
-        {
-            // Ignore boot-time startup failures; the user can re-enable monitoring from the app.
-        }
+        // Disabled to avoid blocking app startup on broadcast delivery.
     }
 }
