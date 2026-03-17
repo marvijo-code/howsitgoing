@@ -1,0 +1,6 @@
+@HowsItGoing.Bridge_HostAddress = http://localhost:5003
+
+GET {{HowsItGoing.Bridge_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

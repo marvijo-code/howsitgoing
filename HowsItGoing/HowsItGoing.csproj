@@ -1,0 +1,45 @@
+<Project Sdk="Uno.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\HowsItGoing.Contracts\HowsItGoing.Contracts.csproj" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetFrameworks>net9.0-android;net9.0</TargetFrameworks>
+
+    <OutputType>Exe</OutputType>
+    <UnoSingleProject>true</UnoSingleProject>
+
+    <!-- Display name -->
+    <ApplicationTitle>HowsItGoing</ApplicationTitle>
+    <!-- App Identifier -->
+    <ApplicationId>com.marvijo.howsitgoing</ApplicationId>
+    <!-- Versions -->
+    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+    <!-- Package Publisher -->
+    <ApplicationPublisher>Marvijo</ApplicationPublisher>
+    <!-- Package Description -->
+    <Description>Android Uno app for Codex session status, notifications, GitHub monitoring, and remote Codex thread launches.</Description>
+
+    <!--
+      UnoFeatures let's you quickly add and manage implicit package references based on the features you want to use.
+      https://aka.platform.uno/singleproject-features
+    -->
+    <UnoFeatures>
+      Material;
+      Hosting;
+      Logging;
+      Configuration;
+      Http;
+      Serialization;
+    </UnoFeatures>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)'=='net9.0-android' and '$(HOWSITGOING_ANDROID_KEYSTORE_PATH)'!=''">
+    <AndroidKeyStore>true</AndroidKeyStore>
+    <AndroidSigningKeyStore>$(HOWSITGOING_ANDROID_KEYSTORE_PATH)</AndroidSigningKeyStore>
+    <AndroidSigningStorePass>$(HOWSITGOING_ANDROID_STORE_PASSWORD)</AndroidSigningStorePass>
+    <AndroidSigningKeyAlias>$(HOWSITGOING_ANDROID_KEY_ALIAS)</AndroidSigningKeyAlias>
+    <AndroidSigningKeyPass>$(HOWSITGOING_ANDROID_KEY_PASSWORD)</AndroidSigningKeyPass>
+  </PropertyGroup>
+
+</Project>

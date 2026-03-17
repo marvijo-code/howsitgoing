@@ -1,0 +1,126 @@
+name: Android Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android workload
+        shell: pwsh
+        run: dotnet workload install android --skip-manifest-update
+
+      - name: Restore and test
+        shell: pwsh
+        run: |
+          dotnet test .\HowsItGoing.Tests\HowsItGoing.Tests.csproj
+          dotnet test .\HowsItGoing.Bridge.Tests\HowsItGoing.Bridge.Tests.csproj
+
+  build:
+    runs-on: windows-latest
+    needs: test
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android workload
+        shell: pwsh
+        run: dotnet workload install android --skip-manifest-update
+
+      - name: Determine version
+        shell: pwsh
+        run: |
+          $versionCode = [int]$env:GITHUB_RUN_NUMBER
+          $versionName = "1.0.$versionCode"
+          "VERSION_CODE=$versionCode" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VERSION_NAME=$versionName" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Prepare Android signing keystore
+        shell: pwsh
+        run: |
+          $keystorePath = Join-Path $env:RUNNER_TEMP "howsitgoing-release.keystore"
+          [IO.File]::WriteAllBytes($keystorePath, [Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE_BASE64 }}"))
+          "HOWSITGOING_ANDROID_KEYSTORE_PATH=$keystorePath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "HOWSITGOING_ANDROID_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "HOWSITGOING_ANDROID_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "HOWSITGOING_ANDROID_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build signed Release APK
+        shell: pwsh
+        run: |
+          dotnet publish .\HowsItGoing\HowsItGoing.csproj `
+            -f net9.0-android `
+            -c Release `
+            -p:AndroidPackageFormat=apk `
+            -p:ApplicationDisplayVersion=$env:VERSION_NAME `
+            -p:ApplicationVersion=$env:VERSION_CODE `
+            -p:AndroidSdkDirectory=$env:ANDROID_SDK_ROOT
+
+      - name: Find APK
+        id: apk
+        shell: pwsh
+        run: |
+          $apk = Get-ChildItem .\HowsItGoing\bin\Release\net9.0-android -Recurse -Filter *.apk | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $apk) { throw "No APK was produced." }
+          $versionedApk = Join-Path $env:RUNNER_TEMP "HowsItGoing-$env:VERSION_NAME.apk"
+          Copy-Item $apk.FullName $versionedApk -Force
+          "APK_PATH=$versionedApk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HowsItGoing-${{ env.VERSION_NAME }}
+          path: ${{ steps.apk.outputs.APK_PATH }}
+
+      - name: Create and push tag
+        shell: pwsh
+        run: |
+          $tag = "v$env:VERSION_NAME"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if (-not (git tag --list $tag)) {
+            git tag $tag
+            git push origin $tag
+          }
+
+      - name: Create Release
+        shell: pwsh
+        run: |
+          $tag = "v$env:VERSION_NAME"
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag "${{ steps.apk.outputs.APK_PATH }}" --clobber
+          } else {
+            gh release create $tag "${{ steps.apk.outputs.APK_PATH }}" --title $tag --notes "Automated Android release for HowsItGoing."
+          }
