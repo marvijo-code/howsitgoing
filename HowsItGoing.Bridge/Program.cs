@@ -1,8 +1,11 @@
 using HowsItGoing.Bridge.Services;
 using HowsItGoing.Bridge.State;
 using HowsItGoing.Contracts;
+using HowsItGoing.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 
 builder.WebHost.UseUrls(builder.Configuration["Bridge:Urls"] ?? "http://0.0.0.0:5217");
 
@@ -10,13 +13,22 @@ builder.Services.AddOpenApi();
 builder.Services.Configure<BridgeOptions>(builder.Configuration.GetSection(BridgeOptions.SectionName));
 builder.Services.Configure<GitHubMonitorOptions>(builder.Configuration.GetSection(GitHubMonitorOptions.SectionName));
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton(_ => SharedStoreOptions.FromConfiguration(builder.Configuration));
+builder.Services.AddSingleton<SharedBridgeStore>();
 builder.Services.AddSingleton<BridgeStateStore>();
 builder.Services.AddSingleton<CodexThreadParser>();
+builder.Services.AddSingleton<ICodexRuntimeStateProvider>(static services => services.GetRequiredService<CodexThreadParser>());
 builder.Services.AddSingleton<CodexSessionService>();
+builder.Services.AddSingleton<ClaudeCodeSessionService>();
+builder.Services.AddSingleton<OpenCodeSessionService>();
+builder.Services.AddSingleton<AgentSessionAggregator>();
 builder.Services.AddSingleton<GitHubRepositoryService>();
+builder.Services.AddSingleton<GitHubIssueService>();
 builder.Services.AddSingleton<AgentLaunchService>();
+builder.Services.AddSingleton<FollowUpService>();
 builder.Services.AddHostedService<CodexCompletionMonitorService>();
 builder.Services.AddHostedService<GitHubMonitorBackgroundService>();
+builder.Services.AddHostedService<SharedBridgeSyncService>();
 
 var app = builder.Build();
 
@@ -49,8 +61,9 @@ app.MapGet("/api/sessions", async (
     string? query,
     string? status,
     string? source,
+    string? agent,
     bool? includeArchived,
-    CodexSessionService sessions,
+    AgentSessionAggregator sessions,
     CancellationToken cancellationToken) =>
 {
     CodexSessionStatus? parsedStatus = null;
@@ -60,8 +73,29 @@ app.MapGet("/api/sessions", async (
         parsedStatus = statusValue;
     }
 
-    var results = await sessions.GetSessionsAsync(query, parsedStatus, source, includeArchived ?? false, cancellationToken);
+    var results = await sessions.GetSessionsAsync(query, parsedStatus, source, agent, includeArchived ?? false, cancellationToken);
     return Results.Ok(results);
+});
+
+app.MapPost("/api/sessions/follow-up", async (
+    SessionFollowUpRequest request,
+    FollowUpService followUps,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.SessionId) || string.IsNullOrWhiteSpace(request.Message))
+    {
+        return Results.BadRequest("Both sessionId and message are required.");
+    }
+
+    try
+    {
+        var response = await followUps.SendAsync(request, cancellationToken);
+        return Results.Ok(response);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
 });
 
 app.MapGet("/api/notifications", async (
@@ -80,6 +114,20 @@ app.MapGet("/api/repository/status", async (
 {
     var status = await gitHubRepositoryService.GetStatusAsync(cancellationToken);
     return Results.Ok(status);
+});
+
+app.MapGet("/api/issues", async (
+    string? repo,
+    string? state,
+    GitHubIssueService issues,
+    CancellationToken cancellationToken) =>
+{
+    var repositoryFilter = string.IsNullOrWhiteSpace(repo)
+        ? null
+        : repo.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    var board = await issues.GetBoardAsync(repositoryFilter, state, cancellationToken);
+    return Results.Ok(board);
 });
 
 app.MapGet("/api/update", async (

@@ -14,16 +14,19 @@ public sealed class BridgeApiClient
     private static readonly string[] DesktopBridgeCandidates = ["http://127.0.0.1:5217/", "http://localhost:5217/"];
 
     private readonly AppSettingsStore _settingsStore;
+    private readonly SharedBridgeStore _sharedStore;
 
-    public BridgeApiClient(AppSettingsStore settingsStore)
+    public BridgeApiClient(AppSettingsStore settingsStore, SharedBridgeStore sharedStore)
     {
         _settingsStore = settingsStore;
+        _sharedStore = sharedStore;
     }
 
     public async Task<IReadOnlyList<CodexSessionSummaryDto>> GetSessionsAsync(
         string? query,
         string? status,
         string? source,
+        string? agent,
         bool includeArchived,
         CancellationToken cancellationToken = default)
     {
@@ -34,10 +37,36 @@ public sealed class BridgeApiClient
                 ["query"] = query,
                 ["status"] = status,
                 ["source"] = source,
+                ["agent"] = agent,
                 ["includeArchived"] = includeArchived.ToString().ToLowerInvariant()
             });
 
-        return await GetAsync<IReadOnlyList<CodexSessionSummaryDto>>(endpoint, cancellationToken) ?? [];
+        return await ExecuteWithSharedFallbackAsync(
+                   directOperation: async token => await GetDirectAsync<IReadOnlyList<CodexSessionSummaryDto>>(endpoint, token) ?? [],
+                   sharedOperation: token => _sharedStore.GetSessionsAsync(query, status, source, agent, includeArchived, token),
+                   cancellationToken)
+               ;
+    }
+
+    public async Task<SessionFollowUpResponse?> SendFollowUpAsync(SessionFollowUpRequest request, CancellationToken cancellationToken = default)
+    {
+        var settings = await _settingsStore.LoadAsync(cancellationToken);
+        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+        using var client = CreateClient(baseUrl);
+        using var response = await SendWithRetryAsync(
+            token => client.PostAsJsonAsync("/api/sessions/follow-up", request, SerializerOptions, token),
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(detail)
+                    ? $"Bridge returned {(int)response.StatusCode} {response.ReasonPhrase}."
+                    : detail.Trim());
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonSerializer.DeserializeAsync<SessionFollowUpResponse>(stream, SerializerOptions, cancellationToken);
     }
 
     public async Task<IReadOnlyList<BridgeNotificationDto>> GetNotificationsAsync(DateTimeOffset? since, int limit, CancellationToken cancellationToken = default)
@@ -50,14 +79,56 @@ public sealed class BridgeApiClient
                 ["limit"] = limit.ToString()
             });
 
-        return await GetAsync<IReadOnlyList<BridgeNotificationDto>>(endpoint, cancellationToken) ?? [];
+        return await ExecuteWithSharedFallbackAsync(
+                   directOperation: async token => await GetDirectAsync<IReadOnlyList<BridgeNotificationDto>>(endpoint, token) ?? [],
+                   sharedOperation: token => _sharedStore.GetNotificationsAsync(since, limit, token),
+                   cancellationToken)
+               ;
     }
 
-    public async Task<RepositoryStatusDto?> GetRepositoryStatusAsync(CancellationToken cancellationToken = default) =>
-        await GetAsync<RepositoryStatusDto>("/api/repository/status", cancellationToken);
+    public async Task<RepositoryStatusDto?> GetRepositoryStatusAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await GetDirectAsync<RepositoryStatusDto>("/api/repository/status", cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken) && _sharedStore.IsConfigured)
+        {
+            return null;
+        }
+    }
 
-    public async Task<BridgeSettingsDto?> GetBridgeSettingsAsync(CancellationToken cancellationToken = default) =>
-        await GetAsync<BridgeSettingsDto>("/api/settings", cancellationToken);
+    public async Task<IssueBoardDto?> GetIssueBoardAsync(string? repositories, string? state, CancellationToken cancellationToken = default)
+    {
+        var endpoint = BuildEndpoint(
+            "/api/issues",
+            new Dictionary<string, string?>
+            {
+                ["repo"] = repositories,
+                ["state"] = state
+            });
+
+        try
+        {
+            return await GetDirectAsync<IssueBoardDto>(endpoint, cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken))
+        {
+            return null;
+        }
+    }
+
+    public async Task<BridgeSettingsDto?> GetBridgeSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await GetDirectAsync<BridgeSettingsDto>("/api/settings", cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken) && _sharedStore.IsConfigured)
+        {
+            return null;
+        }
+    }
 
     public async Task<UpdateInfoDto?> GetUpdateInfoAsync(int? currentVersionCode, string? currentVersion, CancellationToken cancellationToken = default)
     {
@@ -69,23 +140,46 @@ public sealed class BridgeApiClient
                 ["currentVersion"] = currentVersion
             });
 
-        return await GetAsync<UpdateInfoDto>(endpoint, cancellationToken);
+        try
+        {
+            return await GetDirectAsync<UpdateInfoDto>(endpoint, cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken) && _sharedStore.IsConfigured)
+        {
+            return null;
+        }
     }
 
     public async Task<StartCodexRunResponse?> StartAgentRunAsync(StartCodexRunRequest request, CancellationToken cancellationToken = default)
     {
-        var settings = await _settingsStore.LoadAsync(cancellationToken);
-        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-        using var client = CreateClient(baseUrl);
-        using var response = await SendWithRetryAsync(
-            token => client.PostAsJsonAsync("/api/agent/start-run", request, SerializerOptions, token),
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return await JsonSerializer.DeserializeAsync<StartCodexRunResponse>(stream, SerializerOptions, cancellationToken);
+        try
+        {
+            var settings = await _settingsStore.LoadAsync(cancellationToken);
+            var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+            using var client = CreateClient(baseUrl);
+            using var response = await SendWithRetryAsync(
+                token => client.PostAsJsonAsync("/api/agent/start-run", request, SerializerOptions, token),
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw new InvalidOperationException(
+                    string.IsNullOrWhiteSpace(detail)
+                        ? $"Bridge returned {(int)response.StatusCode} {response.ReasonPhrase}."
+                        : detail.Trim());
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            return await JsonSerializer.DeserializeAsync<StartCodexRunResponse>(stream, SerializerOptions, cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken) && _sharedStore.IsConfigured)
+        {
+            var requestedBy = OperatingSystem.IsAndroid() ? "android-app" : Environment.MachineName;
+            return await _sharedStore.QueueStartRunAndWaitAsync(request, requestedBy, cancellationToken);
+        }
     }
 
-    private async Task<T?> GetAsync<T>(string relativeUrl, CancellationToken cancellationToken)
+    private async Task<T?> GetDirectAsync<T>(string relativeUrl, CancellationToken cancellationToken)
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
         var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
@@ -96,6 +190,21 @@ public sealed class BridgeApiClient
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonSerializer.DeserializeAsync<T>(stream, SerializerOptions, cancellationToken);
+    }
+
+    private async Task<T> ExecuteWithSharedFallbackAsync<T>(
+        Func<CancellationToken, Task<T>> directOperation,
+        Func<CancellationToken, Task<T>> sharedOperation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await directOperation(cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken) && _sharedStore.IsConfigured)
+        {
+            return await sharedOperation(cancellationToken);
+        }
     }
 
     private async Task<string> ResolveBaseUrlAsync(AppSettings settings, CancellationToken cancellationToken)
@@ -214,5 +323,15 @@ public sealed class BridgeApiClient
         }
 
         return baseUrl.EndsWith("/", StringComparison.Ordinal) ? baseUrl : baseUrl + "/";
+    }
+
+    private static bool IsBridgeUnreachable(Exception exception, CancellationToken cancellationToken)
+    {
+        if (exception is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            return true;
+        }
+
+        return exception is HttpRequestException httpRequestException && httpRequestException.StatusCode is null;
     }
 }

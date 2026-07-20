@@ -1,17 +1,19 @@
 using Android.App;
 using Android.Content;
+using Android.Content.PM;
 using Android.OS;
 using AndroidX.Core.App;
 using HowsItGoing.Services;
 
 namespace HowsItGoing.Droid;
 
-[Service(Exported = false)]
+[Service(Exported = false, ForegroundServiceType = ForegroundService.TypeDataSync)]
 public sealed class BridgeMonitorForegroundService : Service
 {
     private const string MonitorChannelId = "howsitgoing-monitor";
     private const string EventChannelId = "howsitgoing-events";
     private const int ForegroundNotificationId = 1001;
+    private const ForegroundService ServiceType = ForegroundService.TypeDataSync;
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _monitoringTask;
 
@@ -20,7 +22,14 @@ public sealed class BridgeMonitorForegroundService : Service
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
         EnsureChannels();
-        StartForeground(ForegroundNotificationId, BuildForegroundNotification());
+        if (Build.VERSION.SdkInt >= BuildVersionCodes.Q)
+        {
+            StartForeground(ForegroundNotificationId, BuildForegroundNotification(), ServiceType);
+        }
+        else
+        {
+            StartForeground(ForegroundNotificationId, BuildForegroundNotification());
+        }
 
         if (_monitoringTask is null || _monitoringTask.IsCompleted)
         {
@@ -40,7 +49,15 @@ public sealed class BridgeMonitorForegroundService : Service
     private async Task MonitorAsync(CancellationToken cancellationToken)
     {
         var settingsStore = new AppSettingsStore();
-        var apiClient = new BridgeApiClient(settingsStore);
+        var sharedStoreOptions = SharedStoreOptions.FromLocalJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.Local.json"));
+        if (!sharedStoreOptions.IsConfigured)
+        {
+            // Android packages appsettings.Local.json as an embedded resource, not a loose file.
+            sharedStoreOptions = sharedStoreOptions.Merge(
+                SharedStoreOptions.FromEmbeddedResource(typeof(BridgeMonitorForegroundService).Assembly, "appsettings.Local.json"));
+        }
+        var sharedStore = new SharedBridgeStore(sharedStoreOptions);
+        var apiClient = new BridgeApiClient(settingsStore, sharedStore);
 
         while (!cancellationToken.IsCancellationRequested)
         {

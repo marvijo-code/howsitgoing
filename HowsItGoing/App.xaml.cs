@@ -37,24 +37,6 @@ public partial class App : Application
 
                         // Default filters for core Uno Platform namespaces
                         .CoreLogLevel(LogLevel.Warning);
-
-                    // Uno Platform namespace filter groups
-                    // Uncomment individual methods to see more detailed logging
-                    //// Generic Xaml events
-                    //logBuilder.XamlLogLevel(LogLevel.Debug);
-                    //// Layout specific messages
-                    //logBuilder.XamlLayoutLogLevel(LogLevel.Debug);
-                    //// Storage messages
-                    //logBuilder.StorageLogLevel(LogLevel.Debug);
-                    //// Binding related messages
-                    //logBuilder.XamlBindingLogLevel(LogLevel.Debug);
-                    //// Binder memory references tracking
-                    //logBuilder.BinderMemoryReferenceLogLevel(LogLevel.Debug);
-                    //// DevServer and HotReload related
-                    //logBuilder.HotReloadCoreLogLevel(LogLevel.Information);
-                    //// Debug JS interop
-                    //logBuilder.WebAssemblyLogLevel(LogLevel.Debug);
-
                 }, enableUnoLogging: true)
                 .UseConfiguration(configure: configBuilder =>
                     configBuilder
@@ -70,6 +52,20 @@ public partial class App : Application
 })
                 .ConfigureServices((context, services) =>
                 {
+                    services.AddSingleton(_ =>
+                    {
+                        var configuredOptions = SharedStoreOptions.FromConfiguration(context.Configuration);
+                        var localOptions = SharedStoreOptions.FromLocalJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.Local.json"));
+                        var options = configuredOptions.Merge(localOptions);
+                        if (!options.IsConfigured)
+                        {
+                            // Android packages appsettings.Local.json as an embedded resource, not a loose file.
+                            options = options.Merge(SharedStoreOptions.FromEmbeddedResource(typeof(App).Assembly, "appsettings.Local.json"));
+                        }
+
+                        return options;
+                    });
+                    services.AddSingleton<SharedBridgeStore>();
                     services.AddSingleton<AppSettingsStore>();
                     services.AddSingleton<BridgeApiClient>();
                     services.AddSingleton<MainViewModel>();
@@ -104,7 +100,33 @@ public partial class App : Application
             // parameter
             rootFrame.Navigate(typeof(MainPage), args.Arguments);
         }
+
+        // Apply persisted theme preference (default: Dark)
+        ApplyPersistedTheme(rootFrame);
+
         // Ensure the current window is active
         MainWindow.Activate();
+    }
+
+    private async void ApplyPersistedTheme(FrameworkElement rootElement)
+    {
+        try
+        {
+            var settingsStore = Host?.Services.GetRequiredService<AppSettingsStore>();
+            if (settingsStore is null) return;
+
+            var settings = await settingsStore.LoadAsync();
+            rootElement.RequestedTheme = settings.ThemePreference switch
+            {
+                "Light" => ElementTheme.Light,
+                "Dark" => ElementTheme.Dark,
+                _ => ElementTheme.Dark // Default to dark
+            };
+        }
+        catch
+        {
+            // Fall back to dark on any error
+            rootElement.RequestedTheme = ElementTheme.Dark;
+        }
     }
 }

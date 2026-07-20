@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <resources>
-	<style name="AppTheme" parent="Theme.MaterialComponents.Light">
-		<!-- This removes the ActionBar -->
+	<style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
 		<item name="windowActionBar">false</item>
 		<item name="android:windowActionBar">false</item>
 		<item name="windowNoTitle">true</item>
 		<item name="android:windowNoTitle">true</item>
+		<item name="android:navigationBarColor">#09090B</item>
+		<item name="android:statusBarColor">#09090B</item>
+		<item name="android:windowBackground">#09090B</item>
 	</style>
 
 	<style name="Theme.App.Starting" parent="Theme.SplashScreen">

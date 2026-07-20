@@ -5,6 +5,8 @@
 
 # dotenv files
 .env
+HowsItGoing/appsettings.Local.json
+HowsItGoing.Bridge/appsettings.Local.json
 
 # User-specific files
 *.rsuser

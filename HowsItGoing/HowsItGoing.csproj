@@ -4,7 +4,7 @@
     <ProjectReference Include="..\HowsItGoing.Contracts\HowsItGoing.Contracts.csproj" />
   </ItemGroup>
   <PropertyGroup>
-    <TargetFrameworks>net9.0-android</TargetFrameworks>
+    <TargetFrameworks>net9.0-android;net9.0-desktop</TargetFrameworks>
 
     <OutputType>Exe</OutputType>
     <UnoSingleProject>true</UnoSingleProject>
@@ -34,6 +34,15 @@
       Serialization;
     </UnoFeatures>
   </PropertyGroup>
+
+  <!-- The Uno SDK already embeds appsettings*.json (incl. appsettings.Local.json) as
+       EmbeddedResource; SharedStoreOptions.FromEmbeddedResource reads it from the assembly.
+       This Content copy keeps a loose file next to desktop/test outputs. -->
+  <ItemGroup Condition="Exists('appsettings.Local.json')">
+    <Content Include="appsettings.Local.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
   <PropertyGroup Condition="'$(TargetFramework)'=='net9.0-android' and '$(HOWSITGOING_ANDROID_KEYSTORE_PATH)'!=''">
     <AndroidKeyStore>true</AndroidKeyStore>

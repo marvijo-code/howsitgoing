@@ -10,6 +10,8 @@ public sealed class BridgeOptions
 
     public int RunningThresholdSeconds { get; set; } = 150;
 
+    public int MaxSessionsPerAgent { get; set; } = 60;
+
     public static string ResolveCodexHome(IConfiguration configuration)
     {
         var configured = configuration["Bridge:CodexHome"];

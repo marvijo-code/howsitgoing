@@ -8,7 +8,20 @@ public sealed record AppSettings
 
     public string AgentRepoPath { get; init; } = @"C:\dev\howsitgoing";
 
-    public string AgentModel { get; init; } = "gpt-5.4";
+    public string AgentModel { get; init; } = HowsItGoing.Contracts.CodexLaunchDefaults.DefaultModel;
+
+    public string AgentReasoningEffort { get; init; } = HowsItGoing.Contracts.CodexLaunchDefaults.DefaultReasoningEffort;
 
     public DateTimeOffset? LastSeenNotificationAt { get; init; }
+
+    /// <summary>
+    /// Comma-separated owner/name repositories shown on the Issues board. Empty falls back to the
+    /// bridge's monitored repository plus its configured <c>GitHub:IssueRepositories</c>.
+    /// </summary>
+    public string IssueRepositories { get; init; } = "marvijo-code/marvijo-betting-solution, marvijo-code/howsitgoing";
+
+    /// <summary>
+    /// Persisted theme preference: "Dark", "Light", or "System".
+    /// </summary>
+    public string ThemePreference { get; init; } = "Dark";
 }
