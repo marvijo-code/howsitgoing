@@ -7,13 +7,20 @@ namespace HowsItGoing.Bridge.Services;
 public sealed class CodexSessionService
 {
     private readonly string _stateDbPath;
-    private readonly CodexThreadParser _threadParser;
+    private readonly ICodexRuntimeStateProvider _runtimeStateProvider;
+    private readonly ILogger<CodexSessionService> _logger;
+    private readonly int _maxRuntimeParsers;
 
-    public CodexSessionService(IConfiguration configuration, CodexThreadParser threadParser)
+    public CodexSessionService(
+        IConfiguration configuration,
+        ICodexRuntimeStateProvider runtimeStateProvider,
+        ILogger<CodexSessionService> logger)
     {
         var codexHome = BridgeOptions.ResolveCodexHome(configuration);
         _stateDbPath = configuration["Bridge:StateDbPath"] ?? Path.Combine(codexHome, "state_5.sqlite");
-        _threadParser = threadParser;
+        _runtimeStateProvider = runtimeStateProvider;
+        _logger = logger;
+        _maxRuntimeParsers = Math.Clamp(Environment.ProcessorCount, 2, 8);
     }
 
     public async Task<IReadOnlyList<CodexSessionSummaryDto>> GetSessionsAsync(
@@ -23,44 +30,92 @@ public sealed class CodexSessionService
         bool includeArchived,
         CancellationToken cancellationToken)
     {
-        var rows = await LoadRowsAsync(includeArchived, null, cancellationToken);
         var normalizedQuery = query?.Trim();
         var normalizedSource = source?.Trim();
-        var results = new List<CodexSessionSummaryDto>(rows.Count);
-
-        foreach (var row in rows)
-        {
-            if (!MatchesQuery(row, normalizedQuery) || !MatchesSource(row, normalizedSource))
-            {
-                continue;
-            }
-
-            var runtimeState = await _threadParser.GetRuntimeStateAsync(row.RolloutPath, row.UpdatedAt, row.Archived, cancellationToken);
-            if (status is { } requiredStatus && runtimeState.Status != requiredStatus)
-            {
-                continue;
-            }
-
-            results.Add(ToDto(row, runtimeState));
-        }
-
-        return results.OrderByDescending(x => x.UpdatedAt).ToArray();
+        var rows = await LoadRowsAsync(normalizedQuery, normalizedSource, includeArchived, null, cancellationToken);
+        return await BuildSessionDtosAsync(rows, status, cancellationToken);
     }
 
     public async Task<IReadOnlyList<CodexSessionSummaryDto>> GetRecentUnarchivedSessionsAsync(int take, CancellationToken cancellationToken)
     {
-        var rows = await LoadRowsAsync(includeArchived: false, take, cancellationToken);
-        var results = new List<CodexSessionSummaryDto>(rows.Count);
-        foreach (var row in rows)
-        {
-            var runtimeState = await _threadParser.GetRuntimeStateAsync(row.RolloutPath, row.UpdatedAt, row.Archived, cancellationToken);
-            results.Add(ToDto(row, runtimeState));
-        }
-
-        return results;
+        var rows = await LoadRowsAsync(query: null, source: null, includeArchived: false, take, cancellationToken);
+        return await BuildSessionDtosAsync(rows, status: null, cancellationToken);
     }
 
-    private async Task<List<CodexThreadRow>> LoadRowsAsync(bool includeArchived, int? take, CancellationToken cancellationToken)
+    public async Task<bool> ThreadExistsAsync(string threadId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(threadId) || !File.Exists(_stateDbPath))
+        {
+            return false;
+        }
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = _stateDbPath }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select 1 from threads where id = @id limit 1;";
+        command.Parameters.AddWithValue("@id", threadId.Trim());
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null;
+    }
+
+    private async Task<IReadOnlyList<CodexSessionSummaryDto>> BuildSessionDtosAsync(
+        List<CodexThreadRow> rows,
+        CodexSessionStatus? status,
+        CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        var results = new CodexSessionSummaryDto?[rows.Count];
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, rows.Count),
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = _maxRuntimeParsers
+            },
+            async (index, token) =>
+            {
+                var row = rows[index];
+                var runtimeState = await TryGetRuntimeStateAsync(row, token);
+                if (status is { } requiredStatus && runtimeState.Status != requiredStatus)
+                {
+                    return;
+                }
+
+                results[index] = ToDto(row, runtimeState);
+            });
+
+        return results.Where(x => x is not null).Select(x => x!).ToArray();
+    }
+
+    private async Task<CodexRuntimeState> TryGetRuntimeStateAsync(CodexThreadRow row, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _runtimeStateProvider.GetRuntimeStateAsync(row.RolloutPath, row.UpdatedAt, row.Archived, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to parse Codex runtime state for thread {ThreadId}. Falling back to database-only state.", row.Id);
+            return _runtimeStateProvider.GetFallbackState(row.UpdatedAt, row.Archived);
+        }
+    }
+
+    private async Task<List<CodexThreadRow>> LoadRowsAsync(
+        string? query,
+        string? source,
+        bool includeArchived,
+        int? take,
+        CancellationToken cancellationToken)
     {
         if (!File.Exists(_stateDbPath))
         {
@@ -73,28 +128,62 @@ public sealed class CodexSessionService
         await using var connection = new SqliteConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
 
-        var sql = """
-            select id,
-                   rollout_path,
-                   created_at,
-                   updated_at,
-                   source,
-                   cwd,
-                   title,
-                   archived,
-                   git_branch,
-                   git_origin_url,
-                   agent_nickname,
-                   agent_role
-            from threads
-            where (@includeArchived = 1 or archived = 0)
-            order by updated_at desc
-            """
+        var predicates = new List<string>
+        {
+            "(@includeArchived = 1 or archived = 0)"
+        };
+
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            predicates.Add("source = @source collate nocase");
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            predicates.Add("""
+                (
+                    title like @queryPattern escape '\'
+                    or cwd like @queryPattern escape '\'
+                    or ifnull(git_branch, '') like @queryPattern escape '\'
+                    or ifnull(agent_nickname, '') like @queryPattern escape '\'
+                    or ifnull(agent_role, '') like @queryPattern escape '\'
+                ) collate nocase
+                """);
+        }
+
+        var sql = @"select id,
+       rollout_path,
+       created_at,
+       updated_at,
+       source,
+       cwd,
+       title,
+       archived,
+       git_branch,
+       git_origin_url,
+       agent_nickname,
+       agent_role
+from threads
+where
+  "
+            + string.Join(Environment.NewLine + "  and ", predicates)
+            + Environment.NewLine
+            + "order by updated_at desc"
             + (take is > 0 ? " limit @take" : string.Empty);
 
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.Parameters.AddWithValue("@includeArchived", includeArchived ? 1 : 0);
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            command.Parameters.AddWithValue("@source", source);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            command.Parameters.AddWithValue("@queryPattern", $"%{EscapeLikePattern(query)}%");
+        }
+
         if (take is > 0)
         {
             command.Parameters.AddWithValue("@take", take.Value);
@@ -138,22 +227,11 @@ public sealed class CodexSessionService
             runtimeState.LastAgentMessage,
             runtimeState.CompletedAt);
 
-    private static bool MatchesQuery(CodexThreadRow row, string? query)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return true;
-        }
-
-        return row.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-               row.Cwd.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-               (row.GitBranch?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false) ||
-               (row.AgentNickname?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false) ||
-               (row.AgentRole?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false);
-    }
-
-    private static bool MatchesSource(CodexThreadRow row, string? source) =>
-        string.IsNullOrWhiteSpace(source) || row.Source.Equals(source, StringComparison.OrdinalIgnoreCase);
+    private static string EscapeLikePattern(string value) =>
+        value
+            .Replace(@"\", @"\\", StringComparison.Ordinal)
+            .Replace("%", @"\%", StringComparison.Ordinal)
+            .Replace("_", @"\_", StringComparison.Ordinal);
 
     private sealed record CodexThreadRow(
         string Id,

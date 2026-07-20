@@ -8,6 +8,18 @@ public sealed class GitHubMonitorOptions
 
     public string MonitoredRepositoryPath { get; set; } = "..";
 
+    /// <summary>
+    /// Extra repositories (owner/name) whose issues and pull requests appear on the board,
+    /// in addition to the auto-detected monitored repository.
+    /// </summary>
+    public IList<string> IssueRepositories { get; set; } = new List<string>();
+
+    /// <summary>Max issues and max pull requests fetched per repository.</summary>
+    public int IssuesPerRepository { get; set; } = 50;
+
+    /// <summary>Cap on per-PR check-status lookups (each is one extra GitHub call).</summary>
+    public int MaxCheckLookups { get; set; } = 25;
+
     public static string ResolveMonitoredRepositoryPath(string contentRootPath, string? configuredPath)
     {
         var configured = string.IsNullOrWhiteSpace(configuredPath) ? ".." : configuredPath;

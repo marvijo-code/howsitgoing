@@ -1,0 +1,8 @@
+{
+  "SharedStore": {
+    "ConnectionString": "Server=example;Database=db;",
+    "CommandPollSeconds": 7,
+    "SyncIntervalSeconds": 33,
+    "CommandStartTimeoutSeconds": 90
+  }
+}

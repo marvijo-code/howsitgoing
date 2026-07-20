@@ -14,17 +14,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _bridgeBaseUrl = "http://127.0.0.1:5217";
     private string _searchQuery = string.Empty;
     private string _selectedStatus = "All";
-    private string _selectedSource = "All";
+    private string _selectedAgent = "All";
+    private string _issueRepositories = string.Empty;
+    private string _selectedIssueState = "All";
+    private string _issueBoardSummary = "Loading issues…";
     private bool _includeArchived;
     private bool _monitoringEnabled = true;
     private string _agentRepoPath = @"C:\dev\howsitgoing";
     private string _agentPrompt = "Summarize the current repo status and stop.";
-    private string _agentModel = "gpt-5.4";
-    private string _statusBanner = "Idle";
-    private string _repositorySummary = "Repository status not loaded yet.";
-    private string _updateSummary = "No release information yet.";
+    private string _agentModel = CodexLaunchDefaults.DefaultModel;
+    private string _agentReasoningEffort = CodexLaunchDefaults.DefaultReasoningEffort;
+    private string _statusBanner = "Loading\u2026";
+    private string _repositorySummary = string.Empty;
+    private string _updateSummary = string.Empty;
     private string? _releaseUrl;
     private string _launchResult = string.Empty;
+    private string _notificationWarning = string.Empty;
+    private string _themePreference = "Dark";
+    private int _refreshInFlight;
 
     public MainViewModel(BridgeApiClient bridgeApiClient, AppSettingsStore settingsStore)
     {
@@ -38,9 +45,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public ObservableCollection<BridgeNotificationDto> Notifications { get; } = [];
 
+    public ObservableCollection<IssueSummaryDto> Issues { get; } = [];
+
+    public ObservableCollection<PullRequestSummaryDto> PullRequests { get; } = [];
+
     public ObservableCollection<string> StatusFilters { get; } = ["All", "Running", "Completed", "Idle", "Archived"];
 
-    public ObservableCollection<string> SourceFilters { get; } = ["All", "vscode", "desktop", "cli"];
+    public ObservableCollection<string> AgentFilters { get; } = ["All", "Codex", "Claude Code", "OpenCode"];
+
+    public ObservableCollection<string> IssueStateFilters { get; } = ["All", "Open", "Closed"];
 
     public string BridgeBaseUrl
     {
@@ -57,19 +70,61 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string SelectedStatus
     {
         get => _selectedStatus;
-        set => SetProperty(ref _selectedStatus, value);
+        set
+        {
+            if (SetProperty(ref _selectedStatus, value))
+            {
+                _ = RefreshAsync();
+            }
+        }
     }
 
-    public string SelectedSource
+    public string SelectedAgent
     {
-        get => _selectedSource;
-        set => SetProperty(ref _selectedSource, value);
+        get => _selectedAgent;
+        set
+        {
+            if (SetProperty(ref _selectedAgent, value))
+            {
+                _ = RefreshAsync();
+            }
+        }
+    }
+
+    public string IssueRepositories
+    {
+        get => _issueRepositories;
+        set => SetProperty(ref _issueRepositories, value);
+    }
+
+    public string SelectedIssueState
+    {
+        get => _selectedIssueState;
+        set
+        {
+            if (SetProperty(ref _selectedIssueState, value))
+            {
+                _ = RefreshIssuesAsync();
+            }
+        }
+    }
+
+    public string IssueBoardSummary
+    {
+        get => _issueBoardSummary;
+        private set => SetProperty(ref _issueBoardSummary, value);
     }
 
     public bool IncludeArchived
     {
         get => _includeArchived;
-        set => SetProperty(ref _includeArchived, value);
+        set
+        {
+            if (SetProperty(ref _includeArchived, value))
+            {
+                _ = RefreshAsync();
+            }
+        }
     }
 
     public bool MonitoringEnabled
@@ -96,6 +151,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _agentModel, value);
     }
 
+    public string AgentReasoningEffort
+    {
+        get => _agentReasoningEffort;
+        set => SetProperty(ref _agentReasoningEffort, value);
+    }
+
     public string StatusBanner
     {
         get => _statusBanner;
@@ -120,10 +181,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
         private set => SetProperty(ref _launchResult, value);
     }
 
+    public string NotificationWarning
+    {
+        get => _notificationWarning;
+        private set => SetProperty(ref _notificationWarning, value);
+    }
+
     public string? ReleaseUrl
     {
         get => _releaseUrl;
         private set => SetProperty(ref _releaseUrl, value);
+    }
+
+    public string ThemePreference
+    {
+        get => _themePreference;
+        private set => SetProperty(ref _themePreference, value);
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -135,45 +208,65 @@ public sealed class MainViewModel : INotifyPropertyChanged
             MonitoringEnabled = settings.MonitoringEnabled;
             AgentRepoPath = settings.AgentRepoPath;
             AgentModel = settings.AgentModel;
+            AgentReasoningEffort = settings.AgentReasoningEffort;
+            IssueRepositories = settings.IssueRepositories;
+            ThemePreference = settings.ThemePreference;
             await RefreshAsync(cancellationToken);
         }
         catch (Exception ex)
         {
-            StatusBanner = $"Initialization failed: {ex.Message}";
+            StatusBanner = $"Init failed: {ex.Message}";
         }
     }
 
     public async Task SaveSettingsAsync(CancellationToken cancellationToken = default)
     {
+        var existing = await _settingsStore.LoadAsync(cancellationToken);
         await _settingsStore.SaveAsync(new AppSettings
         {
             BridgeBaseUrl = BridgeBaseUrl.Trim(),
             MonitoringEnabled = MonitoringEnabled,
             AgentRepoPath = AgentRepoPath.Trim(),
-            AgentModel = AgentModel.Trim(),
-            LastSeenNotificationAt = (await _settingsStore.LoadAsync(cancellationToken)).LastSeenNotificationAt
+            AgentModel = CodexLaunchDefaults.ResolveModel(AgentModel),
+            AgentReasoningEffort = CodexLaunchDefaults.ResolveReasoningEffort(AgentReasoningEffort),
+            IssueRepositories = IssueRepositories.Trim(),
+            ThemePreference = ThemePreference,
+            LastSeenNotificationAt = existing.LastSeenNotificationAt
         }, cancellationToken);
 
-        StatusBanner = $"Saved settings for {BridgeBaseUrl}.";
+        StatusBanner = "Settings saved.";
+    }
+
+    public async Task SaveThemePreferenceAsync(string preference, CancellationToken cancellationToken = default)
+    {
+        ThemePreference = preference;
+        var existing = await _settingsStore.LoadAsync(cancellationToken);
+        await _settingsStore.SaveAsync(existing with { ThemePreference = preference }, cancellationToken);
     }
 
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
+        if (Interlocked.Exchange(ref _refreshInFlight, 1) == 1)
+        {
+            return;
+        }
+
         try
         {
-            await SaveSettingsAsync(cancellationToken);
+            StatusBanner = "Refreshing\u2026";
 
             var sessions = await _bridgeApiClient.GetSessionsAsync(
                 SearchQuery,
                 SelectedStatus == "All" ? null : SelectedStatus,
-                SelectedSource == "All" ? null : SelectedSource,
+                source: null,
+                SelectedAgent == "All" ? null : AgentKinds.Normalize(SelectedAgent),
                 IncludeArchived,
                 cancellationToken);
 
-            ReplaceCollection(Sessions, sessions);
+            SynchronizeCollection(Sessions, sessions, session => $"{session.Agent}:{session.Id}");
 
             var notifications = await _bridgeApiClient.GetNotificationsAsync(null, 30, cancellationToken);
-            ReplaceCollection(Notifications, notifications);
+            SynchronizeCollection(Notifications, notifications, notification => notification.Id);
 
             var repositoryStatus = await _bridgeApiClient.GetRepositoryStatusAsync(cancellationToken);
             RepositorySummary = repositoryStatus is null
@@ -186,14 +279,51 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 : FormatUpdateSummary(updateInfo);
             ReleaseUrl = updateInfo?.AssetDownloadUrl;
 
+            await RefreshIssuesAsync(cancellationToken);
+
+            // Re-read the base URL in case the BridgeApiClient auto-resolved a different one
             var latestSettings = await _settingsStore.LoadAsync(cancellationToken);
             BridgeBaseUrl = latestSettings.BridgeBaseUrl;
 
-            StatusBanner = $"Loaded {Sessions.Count} Codex sessions and {Notifications.Count} notifications.";
+            StatusBanner = $"{Sessions.Count} sessions \u00B7 {Notifications.Count} notifications";
         }
         catch (Exception ex)
         {
             StatusBanner = FormatRequestFailure("Refresh failed", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _refreshInFlight, 0);
+        }
+    }
+
+    /// <summary>
+    /// Fetches the open/closed issues + pull requests board and syncs the collections in place.
+    /// Guarded so a GitHub hiccup never fails the main sessions refresh.
+    /// </summary>
+    public async Task RefreshIssuesAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var state = SelectedIssueState == "All" ? null : SelectedIssueState.ToLowerInvariant();
+            var repositories = string.IsNullOrWhiteSpace(IssueRepositories) ? null : IssueRepositories.Trim();
+
+            var board = await _bridgeApiClient.GetIssueBoardAsync(repositories, state, cancellationToken);
+            if (board is null)
+            {
+                Issues.Clear();
+                PullRequests.Clear();
+                IssueBoardSummary = "Issues are unavailable - the bridge is unreachable.";
+                return;
+            }
+
+            SynchronizeCollection(Issues, board.Issues, issue => $"{issue.Repository}#{issue.Number}", IssueSignature);
+            SynchronizeCollection(PullRequests, board.PullRequests, pull => $"{pull.Repository}!{pull.Number}", PullRequestSignature);
+            IssueBoardSummary = FormatIssueBoardSummary(board);
+        }
+        catch (Exception ex)
+        {
+            IssueBoardSummary = FormatRequestFailure("Issues failed", ex);
         }
     }
 
@@ -201,13 +331,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         try
         {
-            await SaveSettingsAsync(cancellationToken);
+            LaunchResult = "Starting\u2026";
             var response = await _bridgeApiClient.StartAgentRunAsync(
-                new StartCodexRunRequest(AgentRepoPath.Trim(), AgentPrompt.Trim(), string.IsNullOrWhiteSpace(AgentModel) ? null : AgentModel.Trim()),
+                CodexLaunchDefaults.CreateRequest(
+                    AgentRepoPath,
+                    AgentPrompt,
+                    AgentModel,
+                    AgentReasoningEffort),
                 cancellationToken);
 
             LaunchResult = response?.ThreadId is null
-                ? "Codex run launched, but the bridge did not receive a thread id before the timeout."
+                ? response?.LaunchMode == "shared-queue-pending"
+                    ? "Run request was queued in the shared store. Keep the bridge online so it can start Codex and publish the real thread id."
+                    : "Codex run launched, but no thread id was received before the timeout."
                 : $"Started thread {response.ThreadId} in {response.RepoPath}.";
         }
         catch (Exception ex)
@@ -216,11 +352,41 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    public async Task<bool> SendFollowUpAsync(CodexSessionSummaryDto session, string message, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            StatusBanner = "Type a follow-up message first.";
+            return false;
+        }
+
+        try
+        {
+            StatusBanner = $"Sending follow-up to {AgentKinds.DisplayName(session.Agent)}…";
+            var response = await _bridgeApiClient.SendFollowUpAsync(
+                new SessionFollowUpRequest(session.Agent, session.Id, message.Trim(), session.WorkingDirectory),
+                cancellationToken);
+
+            StatusBanner = response is null
+                ? "Follow-up sent."
+                : $"Follow-up sent to {AgentKinds.DisplayName(response.Agent)} session. You'll get a notification when the turn finishes.";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            StatusBanner = FormatRequestFailure("Follow-up failed", ex);
+            return false;
+        }
+    }
+
+    public void ApplyMonitoringSyncResult(MonitoringSyncResult result) =>
+        NotificationWarning = result.WarningMessage ?? string.Empty;
+
     private string FormatRequestFailure(string prefix, Exception exception)
     {
         if (exception is HttpRequestException || exception is TaskCanceledException)
         {
-            return $"{prefix}: bridge unreachable at {BridgeBaseUrl}. Use adb reverse to 5217 or set your PC LAN IP.";
+            return $"{prefix}: bridge unreachable at {BridgeBaseUrl}. If shared sync is configured, the phone can still read mirrored data and queue new runs.";
         }
 
         return $"{prefix}: {exception.Message}";
@@ -240,6 +406,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return $"{status.Owner}/{status.Name} on {status.DefaultBranch}. {pushLine}";
     }
 
+    private static string FormatIssueBoardSummary(IssueBoardDto board)
+    {
+        var openIssues = board.Repositories.Sum(r => r.OpenIssueCount);
+        var closedIssues = board.Repositories.Sum(r => r.ClosedIssueCount);
+        var openPulls = board.Repositories.Sum(r => r.OpenPullRequestCount);
+
+        var errors = board.Repositories.Where(r => !string.IsNullOrWhiteSpace(r.Error)).ToList();
+        if (board.Repositories.Count == 0)
+        {
+            return "No repositories configured. Add owner/name entries above.";
+        }
+
+        var repoNames = string.Join(", ", board.Repositories.Select(r => r.Name));
+        var summary = $"{openIssues} open · {closedIssues} closed issues · {openPulls} open PRs · {repoNames}";
+        if (errors.Count > 0)
+        {
+            summary += $" · {errors.Count} repo(s) failed to load";
+        }
+
+        return summary;
+    }
+
     private static string FormatUpdateSummary(UpdateInfoDto updateInfo)
     {
         if (string.IsNullOrWhiteSpace(updateInfo.LatestTag))
@@ -252,12 +440,79 @@ public sealed class MainViewModel : INotifyPropertyChanged
             : $"Latest release is {updateInfo.LatestTag}.";
     }
 
-    private static void ReplaceCollection<T>(ObservableCollection<T> target, IEnumerable<T> values)
+    /// <summary>
+    /// Applies <paramref name="values"/> to <paramref name="target"/> in place (keyed upserts,
+    /// moves, and removals) so periodic refreshes don't reset the list's scroll position.
+    /// </summary>
+    private static string IssueSignature(IssueSummaryDto issue) =>
+        $"{(int)issue.State}|{issue.Title}|{issue.UpdatedAt.UtcTicks}|{issue.ClosedAt?.UtcTicks}|" +
+        $"{string.Join(",", issue.Assignees)}|{string.Join(",", issue.Labels)}|" +
+        $"{string.Join(",", issue.LinkedPullRequestNumbers)}|{AgentSignature(issue.WorkingAgents)}";
+
+    private static string PullRequestSignature(PullRequestSummaryDto pull) =>
+        $"{(int)pull.State}|{pull.Title}|{pull.UpdatedAt.UtcTicks}|{(int)pull.Checks}|{pull.HeadBranch}|" +
+        $"{string.Join(",", pull.LinkedIssueNumbers)}|{AgentSignature(pull.WorkingAgents)}";
+
+    private static string AgentSignature(IReadOnlyList<AgentAssignmentDto> agents) =>
+        string.Join(",", agents.Select(a => $"{a.Agent}:{a.SessionId}:{(int)a.Status}"));
+
+    /// <param name="signatureSelector">
+    /// Optional content signature. When supplied, an existing item is replaced only if its signature
+    /// changed - needed for records whose members are collections (default equality never matches), so
+    /// unchanged rows keep their identity and the list preserves scroll position instead of flickering.
+    /// </param>
+    private static void SynchronizeCollection<T>(
+        ObservableCollection<T> target,
+        IReadOnlyList<T> values,
+        Func<T, string> keySelector,
+        Func<T, string>? signatureSelector = null)
     {
-        target.Clear();
-        foreach (var value in values)
+        var desiredKeys = values.Select(keySelector).ToHashSet(StringComparer.Ordinal);
+        for (var i = target.Count - 1; i >= 0; i--)
         {
-            target.Add(value);
+            if (!desiredKeys.Contains(keySelector(target[i])))
+            {
+                target.RemoveAt(i);
+            }
+        }
+
+        for (var i = 0; i < values.Count; i++)
+        {
+            var key = keySelector(values[i]);
+            var existingIndex = -1;
+            for (var j = i; j < target.Count; j++)
+            {
+                if (string.Equals(keySelector(target[j]), key, StringComparison.Ordinal))
+                {
+                    existingIndex = j;
+                    break;
+                }
+            }
+
+            if (existingIndex < 0)
+            {
+                target.Insert(Math.Min(i, target.Count), values[i]);
+            }
+            else
+            {
+                if (existingIndex != i)
+                {
+                    target.Move(existingIndex, i);
+                }
+
+                var changed = signatureSelector is null
+                    ? !EqualityComparer<T>.Default.Equals(target[i], values[i])
+                    : !string.Equals(signatureSelector(target[i]), signatureSelector(values[i]), StringComparison.Ordinal);
+                if (changed)
+                {
+                    target[i] = values[i];
+                }
+            }
+        }
+
+        while (target.Count > values.Count)
+        {
+            target.RemoveAt(target.Count - 1);
         }
     }
 

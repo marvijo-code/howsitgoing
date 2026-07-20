@@ -5,7 +5,14 @@ using Microsoft.Extensions.Options;
 
 namespace HowsItGoing.Bridge.Services;
 
-public sealed class CodexThreadParser
+public interface ICodexRuntimeStateProvider
+{
+    Task<CodexRuntimeState> GetRuntimeStateAsync(string? rolloutPath, DateTimeOffset updatedAt, bool archived, CancellationToken cancellationToken);
+
+    CodexRuntimeState GetFallbackState(DateTimeOffset updatedAt, bool archived);
+}
+
+public sealed class CodexThreadParser : ICodexRuntimeStateProvider
 {
     private readonly int _runningThresholdSeconds;
     private readonly Dictionary<string, CachedRuntimeState> _cache = new(StringComparer.OrdinalIgnoreCase);
@@ -20,7 +27,7 @@ public sealed class CodexThreadParser
     {
         if (string.IsNullOrWhiteSpace(rolloutPath) || !File.Exists(rolloutPath))
         {
-            return new CodexRuntimeState(ComputeStatus(archived, false, updatedAt), null, null);
+            return GetFallbackState(updatedAt, archived);
         }
 
         var info = new FileInfo(rolloutPath);
@@ -125,7 +132,7 @@ public sealed class CodexThreadParser
                 }
             }
 
-            return new CodexRuntimeState(ComputeStatus(archived, false, updatedAt), null, null);
+            return GetFallbackState(updatedAt, archived);
         }
 
         lock (_cacheLock)
@@ -135,6 +142,9 @@ public sealed class CodexThreadParser
 
         return state;
     }
+
+    public CodexRuntimeState GetFallbackState(DateTimeOffset updatedAt, bool archived) =>
+        new(ComputeStatus(archived, hasTaskComplete: false, updatedAt), null, null);
 
     private static string? TryExtractAssistantText(JsonElement payload)
     {

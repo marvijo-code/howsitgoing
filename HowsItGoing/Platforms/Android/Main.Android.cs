@@ -6,6 +6,7 @@ using Android.App;
 using Android.Content;
 using Android.OS;
 using Android.Runtime;
+using Android.Util;
 using Android.Views;
 using Android.Widget;
 using Microsoft.UI.Xaml.Media;
@@ -22,10 +23,25 @@ namespace HowsItGoing.Droid;
 )]
 public class Application : Microsoft.UI.Xaml.NativeApplication
 {
+    private const string LogTag = "HowsItGoing";
+
     public Application(IntPtr javaReference, JniHandleOwnership transfer)
         : base(() => new App(), javaReference, transfer)
     {
-        ConfigureUniversalImageLoader();
+    }
+
+    public override void OnCreate()
+    {
+        base.OnCreate();
+
+        try
+        {
+            ConfigureUniversalImageLoader();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn(LogTag, $"Failed to configure image loader during application startup: {ex}");
+        }
     }
 
     private static void ConfigureUniversalImageLoader()
@@ -40,4 +56,3 @@ public class Application : Microsoft.UI.Xaml.NativeApplication
         ImageSource.DefaultImageLoader = ImageLoader.Instance.LoadImageAsync;
     }
 }
-
