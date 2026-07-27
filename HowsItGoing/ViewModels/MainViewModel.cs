@@ -12,6 +12,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly BridgeApiClient _bridgeApiClient;
     private readonly AppSettingsStore _settingsStore;
     private string _bridgeBaseUrl = "http://127.0.0.1:5217";
+    private string _bridgeAccessToken = string.Empty;
+    private string _pairingCode = string.Empty;
+    private string _pairingCodeEntry = string.Empty;
+    private string _pairingStatus = string.Empty;
     private string _searchQuery = string.Empty;
     private string _selectedStatus = "All";
     private string _selectedAgent = "All";
@@ -61,8 +65,65 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string BridgeBaseUrl
     {
         get => _bridgeBaseUrl;
-        set => SetProperty(ref _bridgeBaseUrl, value);
+        set
+        {
+            if (SetProperty(ref _bridgeBaseUrl, value))
+            {
+                OnPropertyChanged(nameof(BridgeAccessTokenHint));
+            }
+        }
     }
+
+    /// <summary>
+    /// The per-device token handed out by pairing. Storage only: it is never shown in the UI and
+    /// the user never types it.
+    /// </summary>
+    public string BridgeAccessToken
+    {
+        get => _bridgeAccessToken;
+        set
+        {
+            if (SetProperty(ref _bridgeAccessToken, value))
+            {
+                OnPropertyChanged(nameof(BridgeAccessTokenHint));
+                OnPropertyChanged(nameof(IsPaired));
+            }
+        }
+    }
+
+    public bool IsPaired => !string.IsNullOrWhiteSpace(_bridgeAccessToken);
+
+    /// <summary>The code shown on the bridge host for another device to type in.</summary>
+    public string PairingCode
+    {
+        get => _pairingCode;
+        private set => SetProperty(ref _pairingCode, value);
+    }
+
+    /// <summary>The code the user types on the device being paired.</summary>
+    public string PairingCodeEntry
+    {
+        get => _pairingCodeEntry;
+        set => SetProperty(ref _pairingCodeEntry, value);
+    }
+
+    public string PairingStatus
+    {
+        get => _pairingStatus;
+        private set => SetProperty(ref _pairingStatus, value);
+    }
+
+    /// <summary>Explains the current pairing state without ever echoing the token.</summary>
+    public string BridgeAccessTokenHint =>
+        IsPaired
+            ? "Paired. This device has its own token."
+            : IsLoopbackBridge(_bridgeBaseUrl)
+                ? "Not needed: this bridge is loopback."
+                : "Not paired. This bridge will reject calls from here until you pair.";
+
+    private static bool IsLoopbackBridge(string baseUrl) =>
+        Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) &&
+        (uri.IsLoopback || uri.Host.Equals("10.0.2.2", StringComparison.OrdinalIgnoreCase));
 
     public string SearchQuery
     {
@@ -208,6 +269,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             var settings = await _settingsStore.LoadAsync(cancellationToken);
             BridgeBaseUrl = settings.BridgeBaseUrl;
+            BridgeAccessToken = settings.BridgeAccessToken;
             MonitoringEnabled = settings.MonitoringEnabled;
             AgentRepoPath = settings.AgentRepoPath;
             AgentModel = settings.AgentModel;
@@ -228,6 +290,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await _settingsStore.SaveAsync(new AppSettings
         {
             BridgeBaseUrl = BridgeBaseUrl.Trim(),
+            BridgeAccessToken = BridgeAccessToken.Trim(),
             MonitoringEnabled = MonitoringEnabled,
             AgentRepoPath = AgentRepoPath.Trim(),
             AgentModel = CodexLaunchDefaults.ResolveModel(AgentModel),
@@ -238,6 +301,81 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }, cancellationToken);
 
         StatusBanner = "Settings saved.";
+    }
+
+    /// <summary>
+    /// Opens a pairing window on the bridge and shows the code for another device to type in.
+    /// Only works from a device that can already reach the bridge, which by default means the
+    /// machine the bridge runs on.
+    /// </summary>
+    public async Task StartPairingAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var code = await _bridgeApiClient.StartPairingAsync(cancellationToken);
+            if (code is null)
+            {
+                PairingCode = string.Empty;
+                PairingStatus = "Could not start pairing. Is the bridge reachable from this device?";
+                return;
+            }
+
+            PairingCode = code.Code;
+            PairingStatus = $"Type this on the other device within {(code.ExpiresAt - DateTimeOffset.UtcNow).TotalMinutes:0} minutes.";
+        }
+        catch (Exception ex)
+        {
+            PairingCode = string.Empty;
+            PairingStatus = $"Pairing failed to start: {ex.Message}";
+        }
+    }
+
+    /// <summary>Redeems a code typed on this device and stores the token it returns.</summary>
+    public async Task RedeemPairingCodeAsync(CancellationToken cancellationToken = default)
+    {
+        var code = PairingCodeEntry.Trim();
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            PairingStatus = "Enter the code shown on the bridge host.";
+            return;
+        }
+
+        try
+        {
+            var response = await _bridgeApiClient.RedeemPairingCodeAsync(code, DescribeThisDevice(), cancellationToken);
+            if (response is null)
+            {
+                PairingStatus = "That code was not accepted. Start pairing again on the bridge host.";
+                return;
+            }
+
+            BridgeAccessToken = response.AccessToken;
+            PairingCodeEntry = string.Empty;
+            await SaveSettingsAsync(cancellationToken);
+            PairingStatus = $"Paired as \"{response.DeviceName}\".";
+            await RefreshAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            PairingStatus = $"Pairing failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>Forgets this device's token locally. Revoking on the bridge is separate.</summary>
+    public async Task UnpairAsync(CancellationToken cancellationToken = default)
+    {
+        BridgeAccessToken = string.Empty;
+        await SaveSettingsAsync(cancellationToken);
+        PairingStatus = "This device is no longer paired.";
+    }
+
+    private static string DescribeThisDevice()
+    {
+        var platform = OperatingSystem.IsAndroid() ? "Android"
+            : OperatingSystem.IsBrowser() ? "Web"
+            : OperatingSystem.IsWindows() ? "Windows"
+            : "Device";
+        return $"{platform} ({Environment.MachineName})";
     }
 
     public async Task SaveThemePreferenceAsync(string preference, CancellationToken cancellationToken = default)
@@ -551,6 +689,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             target.RemoveAt(target.Count - 1);
         }
     }
+
+    private void OnPropertyChanged(string propertyName) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 
     private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {

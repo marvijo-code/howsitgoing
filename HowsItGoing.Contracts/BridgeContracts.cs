@@ -249,3 +249,29 @@ public sealed record BridgeSettingsDto(
     string? GitHubRepository,
     int NotificationPollSeconds,
     int GitHubPollSeconds);
+
+/// <summary>A short-lived code the user reads off the bridge host and types into a device.</summary>
+public sealed record PairingCodeDto(
+    string Code,
+    DateTimeOffset ExpiresAt,
+    int AttemptsRemaining);
+
+public sealed record PairingRedeemRequest(
+    string Code,
+    string DeviceName);
+
+/// <summary>
+/// The long-lived per-device secret handed out once a pairing code is redeemed. The bridge keeps
+/// only a hash of it, so this is the single opportunity to store the value.
+/// </summary>
+public sealed record PairingRedeemResponse(
+    string AccessToken,
+    string DeviceId,
+    string DeviceName,
+    DateTimeOffset PairedAt);
+
+public sealed record PairedDeviceDto(
+    string DeviceId,
+    string DeviceName,
+    DateTimeOffset PairedAt,
+    DateTimeOffset? LastSeenAt);

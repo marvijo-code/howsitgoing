@@ -63,9 +63,27 @@ It therefore ships closed:
   executable and started with an argument vector, so no request value can be re-parsed as a
   command. Session ids, models, and reasoning efforts are validated before reaching a CLI.
 
-### Exposing it to a phone on your LAN
+### Pairing a device
 
-Only do this on a network you trust; the traffic is plain HTTP and includes transcript text.
+Devices authenticate with a per-device token, but you never type one. Pairing hands it over:
+
+1. On the machine running the bridge, open **Settings -> Show a pairing code**. You get an
+   8-character code, good for 5 minutes.
+2. On the phone (or any other device), open **Settings**, type the code, and press **Pair**.
+3. The bridge issues that device a 32-byte token, which the app stores and sends from then on.
+
+The short code is only a bootstrap credential and is safe because it is tightly bounded: it only
+exists while you have a pairing window open, it expires after 5 minutes, it is destroyed on first
+use, and five wrong guesses close the window. Guessing 8 characters inside that budget is not a
+viable attack. The token it issues is what actually authenticates, and the bridge stores only a
+hash of it - the `paired-devices.json` file cannot be replayed as a credential if it leaks.
+
+Manage paired devices with `GET /api/pair/devices` and revoke one with
+`DELETE /api/pair/devices/{deviceId}`.
+
+### Reaching the bridge from another device
+
+Pairing gets a device a token, but the bridge still has to be reachable and willing to answer.
 In `HowsItGoing.Bridge/appsettings.Local.json`:
 
 ```json
@@ -73,16 +91,18 @@ In `HowsItGoing.Bridge/appsettings.Local.json`:
   "AllowedHosts": "localhost;127.0.0.1;[::1];10.0.2.2;192.168.1.50",
   "Bridge": {
     "Urls": "http://0.0.0.0:5217",
-    "AccessToken": "<a long random string>",
     "AllowedRepositoryRoots": [ "C:\\dev" ]
   }
 }
 ```
 
-All three matter: `Urls` opens the socket, `AccessToken` makes non-loopback access possible at
-all, and your machine's address must be in `AllowedHosts` or the host filter rejects the request
-with an opaque `400` before authentication runs. Put the same token in the app's
-**Bridge access token** setting. Prefer a WireGuard/Tailscale address over a raw LAN IP.
+`Urls` opens the socket, and your machine's address must be in `AllowedHosts` or the host filter
+rejects the request with an opaque `400` before authentication runs. `Bridge:AccessToken` is still
+supported as a static shared secret, but pairing is the better path - it gives each device its own
+revocable token instead of one secret copied everywhere.
+
+Only do this on a network you trust: the traffic is plain HTTP and includes transcript text, so a
+WireGuard/Tailscale address beats a raw LAN IP.
 
 `appsettings.Local.json` is gitignored - keep the token out of source control. Note that the Uno
 SDK embeds `appsettings*.json` into the app assembly, so a locally built APK carries whatever is

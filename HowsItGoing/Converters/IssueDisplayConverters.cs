@@ -208,3 +208,13 @@ public sealed class BranchToLabelConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, string language) =>
         throw new NotSupportedException();
 }
+
+/// <summary>Shows an element when a bool is true.</summary>
+public sealed class BoolToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language) =>
+        value is true ? Visibility.Visible : Visibility.Collapsed;
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language) =>
+        throw new NotSupportedException();
+}

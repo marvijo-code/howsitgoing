@@ -38,6 +38,8 @@ builder.Services.AddSingleton<OpenCodeSessionService>();
 builder.Services.AddSingleton<AgentSessionAggregator>();
 builder.Services.AddSingleton<GitHubRepositoryService>();
 builder.Services.AddSingleton<GitHubIssueService>();
+builder.Services.AddSingleton<PairedDeviceStore>();
+builder.Services.AddSingleton<PairingService>();
 builder.Services.AddSingleton<AgentLaunchService>();
 builder.Services.AddSingleton<FollowUpService>();
 builder.Services.AddHostedService<CodexCompletionMonitorService>();
@@ -55,6 +57,50 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
+
+// ---- Device pairing -------------------------------------------------------------------------
+// Opening a pairing window is itself a privileged action, so /api/pair/start goes through the
+// normal auth gate (loopback by default). Only the redeem endpoint is anonymous.
+
+app.MapPost("/api/pair/start", (PairingService pairing) => Results.Ok(pairing.StartPairing()));
+
+app.MapPost("/api/pair/cancel", (PairingService pairing) =>
+{
+    pairing.CancelPairing();
+    return Results.NoContent();
+});
+
+app.MapGet("/api/pair/status", (PairingService pairing) => Results.Ok(new { isPairingActive = pairing.IsPairingActive }));
+
+app.MapPost("/api/pair", async (
+    PairingRedeemRequest request,
+    PairingService pairing,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Code))
+    {
+        return Results.BadRequest("A pairing code is required.");
+    }
+
+    var response = await pairing.TryRedeemAsync(request.Code, request.DeviceName, cancellationToken);
+
+    // Deliberately one opaque failure for wrong code, expired code, and no open window: a caller
+    // that cannot pair should not learn which of those it hit.
+    return response is null
+        ? Results.Json(
+            new { error = "pairing_failed", detail = "That code is not valid. Start pairing again on the bridge host." },
+            statusCode: StatusCodes.Status401Unauthorized)
+        : Results.Ok(response);
+});
+
+app.MapGet("/api/pair/devices", async (PairedDeviceStore devices, CancellationToken cancellationToken) =>
+    Results.Ok(await devices.ListAsync(cancellationToken)));
+
+app.MapDelete("/api/pair/devices/{deviceId}", async (
+    string deviceId,
+    PairedDeviceStore devices,
+    CancellationToken cancellationToken) =>
+    await devices.RevokeAsync(deviceId, cancellationToken) ? Results.NoContent() : Results.NotFound());
 
 app.MapGet("/api/settings", (IConfiguration configuration, IHostEnvironment environment) =>
 {
