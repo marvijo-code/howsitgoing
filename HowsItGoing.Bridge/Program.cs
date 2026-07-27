@@ -1,3 +1,4 @@
+using HowsItGoing.Bridge.Security;
 using HowsItGoing.Bridge.Services;
 using HowsItGoing.Bridge.State;
 using HowsItGoing.Contracts;
@@ -7,14 +8,19 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 
-builder.WebHost.UseUrls(builder.Configuration["Bridge:Urls"] ?? "http://0.0.0.0:5217");
+// Loopback by default. Binding wider is a deliberate opt-in that must be paired with
+// Bridge:AccessToken - BridgeAccessMiddleware refuses non-loopback callers without one.
+builder.WebHost.UseUrls(builder.Configuration["Bridge:Urls"] ?? "http://127.0.0.1:5217");
 
 builder.Services.AddOpenApi();
 
-// The WASM head runs on a different origin (its own dev/static host), so the browser
-// preflights every bridge call. The bridge is loopback-only developer tooling.
+// The WASM head runs on its own origin, so the browser preflights every bridge call. Only that
+// origin is allowed: a wildcard would let any page the developer visits drive the bridge, and in
+// the token-less loopback mode those requests would arrive from 127.0.0.1 and be trusted.
+var allowedOrigins = builder.Configuration.GetSection("Bridge:AllowedOrigins").Get<string[]>()
+    ?? ["http://localhost:5219", "http://127.0.0.1:5219"];
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
-    .AllowAnyOrigin()
+    .WithOrigins(allowedOrigins)
     .AllowAnyHeader()
     .AllowAnyMethod()));
 
@@ -41,6 +47,7 @@ builder.Services.AddHostedService<SharedBridgeSyncService>();
 var app = builder.Build();
 
 app.UseCors();
+app.UseMiddleware<BridgeAccessMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -102,6 +109,10 @@ app.MapPost("/api/sessions/follow-up", async (
         var response = await followUps.SendAsync(request, cancellationToken);
         return Results.Ok(response);
     }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status403Forbidden);
+    }
     catch (ArgumentException ex)
     {
         return Results.BadRequest(ex.Message);
@@ -160,8 +171,23 @@ app.MapPost("/api/agent/start-run", async (
         return Results.BadRequest("Both repoPath and prompt are required.");
     }
 
-    var response = await launcher.StartAsync(request, cancellationToken);
-    return Results.Ok(response);
+    try
+    {
+        var response = await launcher.StartAsync(request, cancellationToken);
+        return Results.Ok(response);
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status403Forbidden);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+    catch (DirectoryNotFoundException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
 });
 
 app.Run();

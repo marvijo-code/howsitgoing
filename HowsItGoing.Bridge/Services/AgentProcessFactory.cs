@@ -97,16 +97,6 @@ internal static class AgentProcessFactory
             }
         }
 
-        if (launchSpec.Mode == CodexLaunchMode.CmdScript)
-        {
-            startInfo.FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
-            startInfo.ArgumentList.Add("/d");
-            startInfo.ArgumentList.Add("/s");
-            startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add(BuildCommandLine(launchSpec.FileName, launchSpec.PrefixArguments.Concat(arguments)));
-            return startInfo;
-        }
-
         if (launchSpec.Mode == CodexLaunchMode.PowerShellScript)
         {
             startInfo.FileName = "powershell.exe";
@@ -140,23 +130,8 @@ internal static class AgentProcessFactory
         return startInfo;
     }
 
-    private static CodexProcessLaunchSpec BuildSpec(string executablePath)
-    {
-        if (OperatingSystem.IsWindows() &&
-            (executablePath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
-             executablePath.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)))
-        {
-            return new CodexProcessLaunchSpec(executablePath, [], CodexLaunchMode.CmdScript, executablePath);
-        }
-
-        if (OperatingSystem.IsWindows() &&
-            executablePath.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase))
-        {
-            return new CodexProcessLaunchSpec(executablePath, [], CodexLaunchMode.PowerShellScript, executablePath);
-        }
-
-        return new CodexProcessLaunchSpec(executablePath, [], CodexLaunchMode.Direct, executablePath);
-    }
+    private static CodexProcessLaunchSpec BuildSpec(string executablePath) =>
+        LaunchSpecFactory.FromExecutablePath(executablePath);
 
     private static string? ResolveOnPath(string command)
     {
@@ -183,32 +158,5 @@ internal static class AgentProcessFactory
         }
 
         return null;
-    }
-
-    internal static string BuildCommandLine(string executablePath, IEnumerable<string> arguments)
-    {
-        var argumentList = arguments.ToList();
-        var parts = new List<string>(argumentList.Count + 1)
-        {
-            QuoteForCmd(executablePath)
-        };
-
-        parts.AddRange(argumentList.Select(QuoteForCmd));
-        return string.Join(' ', parts);
-    }
-
-    private static string QuoteForCmd(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return "\"\"";
-        }
-
-        if (!value.Any(ch => char.IsWhiteSpace(ch) || ch is '"' or '^' or '&' or '|' or '<' or '>'))
-        {
-            return value;
-        }
-
-        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 }

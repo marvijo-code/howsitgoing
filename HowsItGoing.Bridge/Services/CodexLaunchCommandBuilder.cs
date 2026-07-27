@@ -6,8 +6,11 @@ internal static class CodexLaunchCommandBuilder
 {
     internal static CodexLaunchCommand Build(StartCodexRunRequest request, string repoPath, bool isGitRepository)
     {
-        var model = CodexLaunchDefaults.ResolveModel(request.Model);
-        var reasoningEffort = CodexLaunchDefaults.ResolveReasoningEffort(request.ReasoningEffort);
+        // Both land in argv, and reasoningEffort is spliced inside a quoted config expression.
+        // Validate rather than trust the request shape.
+        var model = RequestGuards.ValidateModel(CodexLaunchDefaults.ResolveModel(request.Model));
+        var reasoningEffort = RequestGuards.ValidateReasoningEffort(
+            CodexLaunchDefaults.ResolveReasoningEffort(request.ReasoningEffort));
 
         var arguments = new List<string>
         {

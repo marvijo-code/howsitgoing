@@ -4,6 +4,12 @@ public sealed record AppSettings
 {
     public string BridgeBaseUrl { get; init; } = "http://127.0.0.1:5217";
 
+    /// <summary>
+    /// Shared secret sent as <c>Authorization: Bearer</c> to the bridge. Required whenever the
+    /// bridge is reached over anything other than loopback (see <c>Bridge:AccessToken</c>).
+    /// </summary>
+    public string BridgeAccessToken { get; init; } = string.Empty;
+
     public bool MonitoringEnabled { get; init; } = true;
 
     public string AgentRepoPath { get; init; } = @"C:\dev\howsitgoing";
