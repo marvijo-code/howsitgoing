@@ -89,6 +89,21 @@ public sealed partial class MainPage : Page
         await SyncMonitoringAsync();
     }
 
+    private async void StartPairing_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.StartPairingAsync();
+    }
+
+    private async void RedeemPairing_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RedeemPairingCodeAsync();
+    }
+
+    private async void Unpair_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.UnpairAsync();
+    }
+
     private async void StartAgent_Click(object sender, RoutedEventArgs e)
     {
         await ViewModel.StartAgentAsync();
@@ -160,11 +175,13 @@ public sealed partial class MainPage : Page
             PanelNotifications.Visibility = index == 1 ? Visibility.Visible : Visibility.Collapsed;
             PanelIssues.Visibility = index == 2 ? Visibility.Visible : Visibility.Collapsed;
             PanelAgent.Visibility = index == 3 ? Visibility.Visible : Visibility.Collapsed;
+            PanelSettings.Visibility = index == 4 ? Visibility.Visible : Visibility.Collapsed;
 
             SetTabVisual(TabSessions, index == 0);
             SetTabVisual(TabNotifications, index == 1);
             SetTabVisual(TabIssues, index == 2);
             SetTabVisual(TabAgent, index == 3);
+            SetTabVisual(TabSettings, index == 4);
         }
     }
 

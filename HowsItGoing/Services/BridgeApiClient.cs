@@ -179,6 +179,41 @@ public sealed class BridgeApiClient
         }
     }
 
+    /// <summary>Opens a pairing window on the bridge. Needs an already-authorised caller.</summary>
+    public async Task<PairingCodeDto?> StartPairingAsync(CancellationToken cancellationToken = default)
+    {
+        var settings = await _settingsStore.LoadAsync(cancellationToken);
+        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+        using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
+        using var response = await client.PostAsync("/api/pair/start", content: null, cancellationToken);
+        return response.IsSuccessStatusCode
+            ? await response.Content.ReadFromJsonAsync<PairingCodeDto>(SerializerOptions, cancellationToken)
+            : null;
+    }
+
+    /// <summary>
+    /// Redeems a pairing code. Deliberately sends no bearer token: this is how a device that has
+    /// none obtains one.
+    /// </summary>
+    public async Task<PairingRedeemResponse?> RedeemPairingCodeAsync(
+        string code,
+        string deviceName,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await _settingsStore.LoadAsync(cancellationToken);
+        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+        using var client = CreateClient(baseUrl);
+        using var response = await client.PostAsJsonAsync(
+            "/api/pair",
+            new PairingRedeemRequest(code, deviceName),
+            SerializerOptions,
+            cancellationToken);
+
+        return response.IsSuccessStatusCode
+            ? await response.Content.ReadFromJsonAsync<PairingRedeemResponse>(SerializerOptions, cancellationToken)
+            : null;
+    }
+
     private async Task<T?> GetDirectAsync<T>(string relativeUrl, CancellationToken cancellationToken)
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);

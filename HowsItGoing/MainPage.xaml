@@ -61,6 +61,7 @@
       <converters:CheckStatusToVisibilityConverter x:Key="CheckStatusToVisibility" />
       <converters:CollectionToVisibilityConverter x:Key="CollectionToVisibility" />
       <converters:StringToVisibilityConverter x:Key="StringToVisibility" />
+      <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
       <converters:NumberToHashConverter x:Key="NumberToHash" />
       <converters:NumberListToHashesConverter x:Key="NumberListToHashes" />
       <converters:StringListToTextConverter x:Key="StringListToText" />
@@ -133,7 +134,7 @@
             MaxWidth="{StaticResource ContentMaxWidth}"
             Background="{ThemeResource TabBarBackgroundBrush}"
             CornerRadius="12">
-      <Grid ColumnDefinitions="*,*,*,*">
+      <Grid ColumnDefinitions="*,*,*,*,*">
         <Button x:Name="TabSessions"
                 HorizontalAlignment="Stretch"
                 Padding="0,9"
@@ -188,6 +189,20 @@
                      FontWeight="SemiBold"
                      Foreground="{ThemeResource MutedBrush}"
                      Text="New Run" />
+        </Button>
+        <Button x:Name="TabSettings"
+                Grid.Column="4"
+                HorizontalAlignment="Stretch"
+                Padding="0,9"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="Tab_Click"
+                CornerRadius="9"
+                Tag="4">
+          <TextBlock FontSize="12.5"
+                     FontWeight="SemiBold"
+                     Foreground="{ThemeResource MutedBrush}"
+                     Text="Settings" />
         </Button>
       </Grid>
     </Border>
@@ -459,47 +474,6 @@
             </ItemsControl.ItemTemplate>
           </ItemsControl>
 
-          <!-- Bridge settings card -->
-          <Border Padding="14"
-                  Background="{ThemeResource CardBackgroundBrush}"
-                  BorderBrush="{ThemeResource CardBorderBrush}"
-                  BorderThickness="1"
-                  CornerRadius="14">
-            <StackPanel Spacing="10">
-              <TextBlock FontSize="11"
-                         FontWeight="SemiBold"
-                         Foreground="{ThemeResource MutedBrush}"
-                         Text="BRIDGE URL"
-                         CharacterSpacing="60" />
-              <TextBox Background="{ThemeResource InputBackgroundBrush}"
-                       BorderThickness="0"
-                       CornerRadius="8"
-                       Foreground="{ThemeResource HeadingBrush}"
-                       Text="{Binding BridgeBaseUrl, Mode=TwoWay}"
-                       MaxHeight="48" />
-              <Grid ColumnDefinitions="*,Auto">
-                <CheckBox Content="Foreground monitoring"
-                          Foreground="{ThemeResource BodyBrush}"
-                          IsChecked="{Binding MonitoringEnabled, Mode=TwoWay}" />
-                <Button Grid.Column="1"
-                        Padding="14,6"
-                        Background="Transparent"
-                        BorderBrush="{ThemeResource CardBorderBrush}"
-                        BorderThickness="1"
-                        Click="SaveButton_Click"
-                        CornerRadius="8">
-                  <TextBlock FontSize="12"
-                             FontWeight="SemiBold"
-                             Foreground="{ThemeResource AccentBrush}"
-                             Text="Save" />
-                </Button>
-              </Grid>
-              <TextBlock FontSize="12"
-                         Foreground="{ThemeResource AccentBrush}"
-                         Text="{Binding NotificationWarning}"
-                         TextWrapping="Wrap" />
-            </StackPanel>
-          </Border>
         </StackPanel>
 
         <!-- ════════════════════════════════════════ -->
@@ -980,6 +954,129 @@
             </StackPanel>
           </Border>
 
+        </StackPanel>
+
+        <StackPanel x:Name="PanelSettings" Spacing="12" Visibility="Collapsed">
+
+          <!-- Bridge settings card -->
+          <Border Padding="14"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="14">
+            <StackPanel Spacing="10">
+              <TextBlock FontSize="11"
+                         FontWeight="SemiBold"
+                         Foreground="{ThemeResource MutedBrush}"
+                         Text="BRIDGE URL"
+                         CharacterSpacing="60" />
+              <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                       BorderThickness="0"
+                       CornerRadius="8"
+                       Foreground="{ThemeResource HeadingBrush}"
+                       Text="{Binding BridgeBaseUrl, Mode=TwoWay}"
+                       MaxHeight="48" />
+              <Grid ColumnDefinitions="*,Auto">
+                <CheckBox Content="Foreground monitoring"
+                          Foreground="{ThemeResource BodyBrush}"
+                          IsChecked="{Binding MonitoringEnabled, Mode=TwoWay}" />
+                <Button Grid.Column="1"
+                        Padding="14,6"
+                        Background="Transparent"
+                        BorderBrush="{ThemeResource CardBorderBrush}"
+                        BorderThickness="1"
+                        Click="SaveButton_Click"
+                        CornerRadius="8">
+                  <TextBlock FontSize="12"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource AccentBrush}"
+                             Text="Save" />
+                </Button>
+              </Grid>
+              <TextBlock FontSize="12"
+                         Foreground="{ThemeResource AccentBrush}"
+                         Text="{Binding NotificationWarning}"
+                         TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+
+          <!-- Device pairing card -->
+          <Border Padding="14"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="14">
+            <StackPanel Spacing="10">
+              <TextBlock FontSize="11"
+                         FontWeight="SemiBold"
+                         Foreground="{ThemeResource MutedBrush}"
+                         Text="DEVICE PAIRING"
+                         CharacterSpacing="60" />
+              <TextBlock FontSize="12"
+                         Foreground="{ThemeResource BodyBrush}"
+                         Text="{Binding BridgeAccessTokenHint}"
+                         TextWrapping="Wrap" />
+
+              <!-- On the bridge host: hand out a code -->
+              <Button Padding="14,6"
+                      HorizontalAlignment="Stretch"
+                      Background="Transparent"
+                      BorderBrush="{ThemeResource CardBorderBrush}"
+                      BorderThickness="1"
+                      Click="StartPairing_Click"
+                      CornerRadius="8">
+                <TextBlock FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource AccentBrush}"
+                           Text="Show a pairing code" />
+              </Button>
+              <TextBlock FontSize="30"
+                         FontWeight="Bold"
+                         FontFamily="Consolas"
+                         HorizontalAlignment="Center"
+                         CharacterSpacing="180"
+                         Foreground="{ThemeResource HeadingBrush}"
+                         Text="{Binding PairingCode}" />
+
+              <!-- On the device being paired: type the code in -->
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                         BorderThickness="0"
+                         CornerRadius="8"
+                         Foreground="{ThemeResource HeadingBrush}"
+                         PlaceholderText="Enter code from bridge host"
+                         Text="{Binding PairingCodeEntry, Mode=TwoWay}"
+                         MaxHeight="48" />
+                <Button Grid.Column="1"
+                        Padding="14,6"
+                        Background="Transparent"
+                        BorderBrush="{ThemeResource CardBorderBrush}"
+                        BorderThickness="1"
+                        Click="RedeemPairing_Click"
+                        CornerRadius="8">
+                  <TextBlock FontSize="12"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource AccentBrush}"
+                             Text="Pair" />
+                </Button>
+              </Grid>
+
+              <TextBlock FontSize="12"
+                         Foreground="{ThemeResource AccentBrush}"
+                         Text="{Binding PairingStatus}"
+                         TextWrapping="Wrap" />
+              <Button Padding="14,6"
+                      HorizontalAlignment="Left"
+                      Background="Transparent"
+                      BorderThickness="0"
+                      Click="Unpair_Click"
+                      Visibility="{Binding IsPaired, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock FontSize="12"
+                           Foreground="{ThemeResource MutedBrush}"
+                           Text="Unpair this device" />
+              </Button>
+            </StackPanel>
+          </Border>
         </StackPanel>
 
       </StackPanel>

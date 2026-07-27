@@ -37,10 +37,27 @@ public sealed class BridgeAccessMiddleware
         _logger = logger;
     }
 
-    public async Task InvokeAsync(HttpContext context)
+    public async Task InvokeAsync(HttpContext context, PairedDeviceStore devices)
     {
         if (!context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
         {
+            await _next(context);
+            return;
+        }
+
+        // Redeeming a pairing code is how a device obtains its token, so it cannot itself require
+        // one. PairingService only honours a redeem while the user has a pairing window open.
+        if (context.Request.Path.Equals("/api/pair", StringComparison.OrdinalIgnoreCase))
+        {
+            await _next(context);
+            return;
+        }
+
+        // A paired device carries its own long-lived token and is accepted from any address.
+        if (TryReadBearerToken(context, out var deviceToken) &&
+            await devices.TryAuthenticateAsync(deviceToken, context.RequestAborted) is { } pairedDevice)
+        {
+            context.Items["PairedDevice"] = pairedDevice;
             await _next(context);
             return;
         }
