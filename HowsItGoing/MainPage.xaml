@@ -47,6 +47,9 @@
       <converters:StatusToBackgroundBrushConverter x:Key="StatusToBackgroundBrush" />
       <converters:RelativeTimeConverter x:Key="RelativeTime" />
       <converters:AbsoluteTimeConverter x:Key="AbsoluteTime" />
+
+      <!-- Caps the readable column on desktop/web; phones are narrower so it never applies there. -->
+      <x:Double x:Key="ContentMaxWidth">900</x:Double>
       <converters:IssueStateToLabelConverter x:Key="IssueStateToLabel" />
       <converters:IssueStateToBrushConverter x:Key="IssueStateToBrush" />
       <converters:IssueStateToBackgroundBrushConverter x:Key="IssueStateToBackgroundBrush" />
@@ -64,17 +67,18 @@
     </ResourceDictionary>
   </Page.Resources>
 
-  <!-- MaxWidth keeps the desktop head a phone-width preview column; phones are narrower anyway. -->
+  <!-- Fills the window on desktop/web and stays a single column on phones. The content
+       inside is centred and width-capped (see ContentMaxWidth) so lines stay readable. -->
   <Grid x:Name="RootLayout"
-        MaxWidth="520"
-        HorizontalAlignment="Left"
         Background="{ThemeResource PageBackgroundBrush}"
         RowDefinitions="Auto,Auto,*">
 
     <!-- ======== HEADER (below the status-bar safe area) ======== -->
-    <Grid Grid.Row="0"
-          Padding="16,10,16,6"
-          Background="{ThemeResource HeaderBackgroundBrush}"
+    <!-- Border keeps the bar full-bleed while the inner Grid stays centred and capped. -->
+    <Border Grid.Row="0" Background="{ThemeResource HeaderBackgroundBrush}">
+    <Grid Padding="16,10,16,6"
+          MaxWidth="{StaticResource ContentMaxWidth}"
+          HorizontalAlignment="Stretch"
           ColumnDefinitions="*,Auto,Auto">
       <StackPanel VerticalAlignment="Center">
         <StackPanel Orientation="Horizontal" Spacing="8">
@@ -120,11 +124,13 @@
         <TextBlock FontSize="13" FontWeight="SemiBold" Text="Refresh" />
       </Button>
     </Grid>
+    </Border>
 
     <!-- ======== SEGMENTED TAB BAR ======== -->
     <Border Grid.Row="1"
             Margin="16,6,16,10"
             Padding="4"
+            MaxWidth="{StaticResource ContentMaxWidth}"
             Background="{ThemeResource TabBarBackgroundBrush}"
             CornerRadius="12">
       <Grid ColumnDefinitions="*,*,*,*">
@@ -191,7 +197,9 @@
                   HorizontalScrollBarVisibility="Disabled"
                   HorizontalScrollMode="Disabled"
                   VerticalScrollBarVisibility="Auto">
-      <StackPanel Padding="16,0,16,32">
+      <StackPanel Padding="16,0,16,32"
+                  MaxWidth="{StaticResource ContentMaxWidth}"
+                  HorizontalAlignment="Stretch">
 
         <!-- ════════════════════════════════════════ -->
         <!-- SESSIONS PANEL                           -->

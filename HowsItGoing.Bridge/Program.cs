@@ -10,6 +10,14 @@ builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, relo
 builder.WebHost.UseUrls(builder.Configuration["Bridge:Urls"] ?? "http://0.0.0.0:5217");
 
 builder.Services.AddOpenApi();
+
+// The WASM head runs on a different origin (its own dev/static host), so the browser
+// preflights every bridge call. The bridge is loopback-only developer tooling.
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
+    .AllowAnyOrigin()
+    .AllowAnyHeader()
+    .AllowAnyMethod()));
+
 builder.Services.Configure<BridgeOptions>(builder.Configuration.GetSection(BridgeOptions.SectionName));
 builder.Services.Configure<GitHubMonitorOptions>(builder.Configuration.GetSection(GitHubMonitorOptions.SectionName));
 builder.Services.AddHttpClient();
@@ -31,6 +39,8 @@ builder.Services.AddHostedService<GitHubMonitorBackgroundService>();
 builder.Services.AddHostedService<SharedBridgeSyncService>();
 
 var app = builder.Build();
+
+app.UseCors();
 
 if (app.Environment.IsDevelopment())
 {

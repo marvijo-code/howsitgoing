@@ -16,7 +16,11 @@ public sealed class SharedStoreOptions
 
     public int CommandStartTimeoutSeconds { get; set; } = 45;
 
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(ConnectionString);
+    /// <summary>
+    /// The shared store is a direct MySQL connection, which needs a raw TCP socket. A browser
+    /// (WASM) head has no such socket, so the web app talks to the bridge over HTTP only.
+    /// </summary>
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(ConnectionString) && !OperatingSystem.IsBrowser();
 
     public static SharedStoreOptions FromConfiguration(IConfiguration configuration)
     {
