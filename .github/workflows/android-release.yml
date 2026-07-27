@@ -26,9 +26,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android workload
+      - name: Install workloads
         shell: pwsh
-        run: dotnet workload install android --skip-manifest-update
+        # wasm-tools is needed even for an Android-only build: restore evaluates every
+        # target framework in HowsItGoing.csproj, which now includes net9.0-browserwasm.
+        run: dotnet workload install android wasm-tools --skip-manifest-update
 
       - name: Restore and test
         shell: pwsh
@@ -55,9 +57,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android workload
+      - name: Install workloads
         shell: pwsh
-        run: dotnet workload install android --skip-manifest-update
+        # wasm-tools is needed even for an Android-only build: restore evaluates every
+        # target framework in HowsItGoing.csproj, which now includes net9.0-browserwasm.
+        run: dotnet workload install android wasm-tools --skip-manifest-update
 
       - name: Determine version
         shell: pwsh
