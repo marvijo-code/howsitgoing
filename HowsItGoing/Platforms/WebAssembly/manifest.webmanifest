@@ -1,0 +1,10 @@
+{
+  "name": "HowsItGoing",
+  "short_name": "HowsItGoing",
+  "description": "Monitor Codex, Claude Code, and OpenCode agent sessions.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#09090B",
+  "theme_color": "#09090B"
+}

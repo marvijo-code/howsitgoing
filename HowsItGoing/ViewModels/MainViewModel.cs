@@ -33,6 +33,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _themePreference = "Dark";
     private int _refreshInFlight;
 
+    /// <summary>Upper bound for one refresh pass, so the in-flight guard always clears.</summary>
+    private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(60);
+
     public MainViewModel(BridgeApiClient bridgeApiClient, AppSettingsStore settingsStore)
     {
         _bridgeApiClient = bridgeApiClient;
@@ -251,50 +254,83 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
+        // A hung bridge call must never wedge the refresh loop: without this the in-flight
+        // guard would block every later tick and sessions would silently stop updating.
+        using var timeout = new CancellationTokenSource(RefreshTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        var token = linked.Token;
+
         try
         {
             StatusBanner = "Refreshing\u2026";
 
+            // Core data drives the banner, so it is awaited first and on its own. The
+            // auxiliary calls below are GitHub-backed and can take tens of seconds.
             var sessions = await _bridgeApiClient.GetSessionsAsync(
                 SearchQuery,
                 SelectedStatus == "All" ? null : SelectedStatus,
                 source: null,
                 SelectedAgent == "All" ? null : AgentKinds.Normalize(SelectedAgent),
                 IncludeArchived,
-                cancellationToken);
+                token);
 
             SynchronizeCollection(Sessions, sessions, session => $"{session.Agent}:{session.Id}");
 
-            var notifications = await _bridgeApiClient.GetNotificationsAsync(null, 30, cancellationToken);
+            var notifications = await _bridgeApiClient.GetNotificationsAsync(null, 30, token);
             SynchronizeCollection(Notifications, notifications, notification => notification.Id);
 
-            var repositoryStatus = await _bridgeApiClient.GetRepositoryStatusAsync(cancellationToken);
-            RepositorySummary = repositoryStatus is null
-                ? "Bridge is reachable, but repository status is unavailable."
-                : FormatRepositorySummary(repositoryStatus);
+            StatusBanner = $"{Sessions.Count} sessions \u00B7 {Notifications.Count} notifications";
 
-            var updateInfo = await _bridgeApiClient.GetUpdateInfoAsync(null, null, cancellationToken);
-            UpdateSummary = updateInfo is null
-                ? "No published release found yet."
-                : FormatUpdateSummary(updateInfo);
-            ReleaseUrl = updateInfo?.AssetDownloadUrl;
-
-            await RefreshIssuesAsync(cancellationToken);
-
-            // Re-read the base URL in case the BridgeApiClient auto-resolved a different one
-            var latestSettings = await _settingsStore.LoadAsync(cancellationToken);
+            // Re-read the base URL in case the BridgeApiClient auto-resolved a different one.
+            var latestSettings = await _settingsStore.LoadAsync(token);
             BridgeBaseUrl = latestSettings.BridgeBaseUrl;
 
-            StatusBanner = $"{Sessions.Count} sessions \u00B7 {Notifications.Count} notifications";
+            await RefreshAuxiliaryAsync(token);
         }
         catch (Exception ex)
         {
-            StatusBanner = FormatRequestFailure("Refresh failed", ex);
+            StatusBanner = timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested
+                ? $"Refresh timed out after {RefreshTimeout.TotalSeconds:0}s. Is the bridge running at {BridgeBaseUrl}?"
+                : FormatRequestFailure("Refresh failed", ex);
         }
         finally
         {
             Interlocked.Exchange(ref _refreshInFlight, 0);
         }
+    }
+
+    /// <summary>
+    /// Secondary panels (repo status, update check, issue board). Each is isolated so one slow
+    /// or failing GitHub call cannot blank the others or the already-published session list.
+    /// </summary>
+    private async Task RefreshAuxiliaryAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var repositoryStatus = await _bridgeApiClient.GetRepositoryStatusAsync(cancellationToken);
+            RepositorySummary = repositoryStatus is null
+                ? "Bridge is reachable, but repository status is unavailable."
+                : FormatRepositorySummary(repositoryStatus);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RepositorySummary = "Repository status is unavailable.";
+        }
+
+        try
+        {
+            var updateInfo = await _bridgeApiClient.GetUpdateInfoAsync(null, null, cancellationToken);
+            UpdateSummary = updateInfo is null
+                ? "No published release found yet."
+                : FormatUpdateSummary(updateInfo);
+            ReleaseUrl = updateInfo?.AssetDownloadUrl;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            UpdateSummary = "Update check is unavailable.";
+        }
+
+        await RefreshIssuesAsync(cancellationToken);
     }
 
     /// <summary>
