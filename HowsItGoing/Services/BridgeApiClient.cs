@@ -52,7 +52,7 @@ public sealed class BridgeApiClient
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
         var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-        using var client = CreateClient(baseUrl);
+        using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
         using var response = await SendWithRetryAsync(
             token => client.PostAsJsonAsync("/api/sessions/follow-up", request, SerializerOptions, token),
             cancellationToken);
@@ -156,7 +156,7 @@ public sealed class BridgeApiClient
         {
             var settings = await _settingsStore.LoadAsync(cancellationToken);
             var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-            using var client = CreateClient(baseUrl);
+            using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
             using var response = await SendWithRetryAsync(
                 token => client.PostAsJsonAsync("/api/agent/start-run", request, SerializerOptions, token),
                 cancellationToken);
@@ -183,7 +183,7 @@ public sealed class BridgeApiClient
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
         var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-        using var client = CreateClient(baseUrl);
+        using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
         using var response = await SendWithRetryAsync(
             token => client.GetAsync(relativeUrl, token),
             cancellationToken);
@@ -298,12 +298,24 @@ public sealed class BridgeApiClient
         }
     }
 
-    private static HttpClient CreateClient(string baseUrl, TimeSpan? timeout = null) =>
-        new()
+    private static HttpClient CreateClient(string baseUrl, TimeSpan? timeout = null, string? accessToken = null)
+    {
+        var client = new HttpClient
         {
             BaseAddress = new Uri(NormalizeBaseUrl(baseUrl)),
             Timeout = timeout ?? TimeSpan.FromSeconds(30)
         };
+
+        // The bridge requires this for every /api call once Bridge:AccessToken is set, which it
+        // must be whenever the bridge is reached over anything but loopback.
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Trim());
+        }
+
+        return client;
+    }
 
     private static string BuildEndpoint(string path, IReadOnlyDictionary<string, string?> query)
     {

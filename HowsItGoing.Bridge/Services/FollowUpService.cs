@@ -14,17 +14,20 @@ public sealed class FollowUpService
     private readonly BridgeStateStore _stateStore;
     private readonly AgentSessionAggregator _sessionAggregator;
     private readonly IConfiguration _configuration;
+    private readonly IHostEnvironment _environment;
     private readonly ILogger<FollowUpService> _logger;
 
     public FollowUpService(
         BridgeStateStore stateStore,
         AgentSessionAggregator sessionAggregator,
         IConfiguration configuration,
+        IHostEnvironment environment,
         ILogger<FollowUpService> logger)
     {
         _stateStore = stateStore;
         _sessionAggregator = sessionAggregator;
         _configuration = configuration;
+        _environment = environment;
         _logger = logger;
     }
 
@@ -37,7 +40,7 @@ public sealed class FollowUpService
             throw new ArgumentException($"Unknown agent kind: {request.Agent}");
         }
 
-        var sessionId = request.SessionId.Trim();
+        var sessionId = RequestGuards.ValidateSessionId(request.SessionId);
         var message = request.Message.Trim();
 
         var workingDirectory = request.WorkingDirectory?.Trim();
@@ -47,10 +50,16 @@ public sealed class FollowUpService
             workingDirectory = session?.WorkingDirectory;
         }
 
+        // No user-profile fallback: resuming an auto-approving agent against the whole home
+        // directory is never what the caller meant, and it used to be reachable by sending an
+        // unknown session id.
         if (string.IsNullOrWhiteSpace(workingDirectory) || !Directory.Exists(workingDirectory))
         {
-            workingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            throw new ArgumentException(
+                $"Could not determine a working directory for session {sessionId}. Pass an existing workingDirectory.");
         }
+
+        WorkspaceGuard.EnsureAllowed(workingDirectory, _configuration, _environment);
 
         var (launchSpec, arguments, stdinInput) = BuildLaunch(agent, sessionId, message);
         var environmentOverrides = agent == AgentKinds.ClaudeCode ? ReadClaudeEnvironment() : null;

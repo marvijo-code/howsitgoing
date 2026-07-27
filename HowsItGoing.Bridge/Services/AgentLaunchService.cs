@@ -11,17 +11,20 @@ public sealed class AgentLaunchService
     private readonly BridgeStateStore _stateStore;
     private readonly CodexSessionService _sessionService;
     private readonly IConfiguration _configuration;
+    private readonly IHostEnvironment _environment;
     private readonly ILogger<AgentLaunchService> _logger;
 
     public AgentLaunchService(
         BridgeStateStore stateStore,
         CodexSessionService sessionService,
         IConfiguration configuration,
+        IHostEnvironment environment,
         ILogger<AgentLaunchService> logger)
     {
         _stateStore = stateStore;
         _sessionService = sessionService;
         _configuration = configuration;
+        _environment = environment;
         _logger = logger;
     }
 
@@ -32,6 +35,8 @@ public sealed class AgentLaunchService
         {
             throw new DirectoryNotFoundException($"Repo path does not exist: {repoPath}");
         }
+
+        WorkspaceGuard.EnsureAllowed(repoPath, _configuration, _environment);
 
         var launchCommand = CodexLaunchCommandBuilder.Build(
             request,

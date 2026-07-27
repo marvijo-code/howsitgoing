@@ -60,23 +60,8 @@ internal static class CodexCliLocator
         return BuildSpec(resolved);
     }
 
-    private static CodexProcessLaunchSpec BuildSpec(string executablePath)
-    {
-        if (OperatingSystem.IsWindows() &&
-            (executablePath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
-             executablePath.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)))
-        {
-            return new CodexProcessLaunchSpec(executablePath, [], CodexLaunchMode.CmdScript, executablePath);
-        }
-
-        if (OperatingSystem.IsWindows() &&
-            executablePath.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase))
-        {
-            return new CodexProcessLaunchSpec(executablePath, [], CodexLaunchMode.PowerShellScript, executablePath);
-        }
-
-        return new CodexProcessLaunchSpec(executablePath, [], CodexLaunchMode.Direct, executablePath);
-    }
+    private static CodexProcessLaunchSpec BuildSpec(string executablePath) =>
+        LaunchSpecFactory.FromExecutablePath(executablePath);
 
     private static string? ResolveOnPath(string command, bool preferWindowsApps)
     {
@@ -135,6 +120,5 @@ internal sealed record CodexProcessLaunchSpec(
 internal enum CodexLaunchMode
 {
     Direct,
-    CmdScript,
     PowerShellScript
 }
