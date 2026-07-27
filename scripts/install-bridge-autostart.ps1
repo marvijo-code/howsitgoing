@@ -24,11 +24,26 @@ Start-Sleep -Seconds 1
 dotnet publish $bridgeProject -c Release -o $InstallDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
-# Local (gitignored) config with the shared-store connection string.
+# Local (gitignored) config with the shared-store connection string, plus an absolute
+# monitored-repo path. The default is the relative "..", which resolves against the
+# install folder once published outside the repo - that silently breaks repository
+# status, push monitoring, the update check, and the issue board's default repo.
 $localConfig = Join-Path $repoRoot 'HowsItGoing.Bridge\appsettings.Local.json'
-if (Test-Path $localConfig) {
-    Copy-Item $localConfig (Join-Path $InstallDir 'appsettings.Local.json') -Force
+$installedConfig = Join-Path $InstallDir 'appsettings.Local.json'
+
+$config = if (Test-Path $localConfig) {
+    Get-Content $localConfig -Raw | ConvertFrom-Json
 }
+else {
+    [pscustomobject]@{}
+}
+
+if ($null -eq $config.GitHub) {
+    $config | Add-Member -NotePropertyName 'GitHub' -NotePropertyValue ([pscustomobject]@{}) -Force
+}
+$config.GitHub | Add-Member -NotePropertyName 'MonitoredRepositoryPath' -NotePropertyValue $repoRoot -Force
+
+$config | ConvertTo-Json -Depth 10 | Set-Content -Path $installedConfig -Encoding UTF8
 
 $bridgeExe = Join-Path $InstallDir 'HowsItGoing.Bridge.exe'
 $startedViaTask = $false
