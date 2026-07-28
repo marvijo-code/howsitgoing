@@ -35,6 +35,17 @@
     </UnoFeatures>
   </PropertyGroup>
 
+  <!-- [JSImport] (used for the browser push interop) makes the runtime generate unsafe marshalling
+       code, so the compiler requires this. Scoped to the browser head: no other target uses JS
+       interop and none of them should quietly gain the ability to compile unsafe blocks. -->
+  <PropertyGroup Condition="'$(TargetFramework)'=='net9.0-browserwasm'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- Static web files (the push service worker + its interop module) live in
+       Platforms/WebAssembly/wwwroot/. The Uno SDK deploys that folder to the site root on its own;
+       a project-level wwwroot/ is NOT picked up. -->
+
   <!-- The Uno SDK already embeds appsettings*.json (incl. appsettings.Local.json) as
        EmbeddedResource; SharedStoreOptions.FromEmbeddedResource reads it from the assembly.
        This Content copy keeps a loose file next to desktop/test outputs. -->

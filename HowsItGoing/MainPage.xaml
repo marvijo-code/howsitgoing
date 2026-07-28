@@ -61,6 +61,8 @@
       <converters:CheckStatusToVisibilityConverter x:Key="CheckStatusToVisibility" />
       <converters:CollectionToVisibilityConverter x:Key="CollectionToVisibility" />
       <converters:StringToVisibilityConverter x:Key="StringToVisibility" />
+      <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+      <converters:BoolToDimOpacityConverter x:Key="BoolToDimOpacity" />
       <converters:NumberToHashConverter x:Key="NumberToHash" />
       <converters:NumberListToHashesConverter x:Key="NumberListToHashes" />
       <converters:StringListToTextConverter x:Key="StringListToText" />
@@ -73,29 +75,94 @@
         Background="{ThemeResource PageBackgroundBrush}"
         RowDefinitions="Auto,Auto,*">
 
+    <!-- Phones get the width back. The 16px gutters were tuned on a desktop window, where they are
+         a rounding error, but on a 390px screen they cost 8% of every card and pushed the header's
+         status line into an ellipsis. Below 640px the gutters halve and the Refresh button drops
+         its label; above it the layout is unchanged and the content still centres at 900px. -->
+    <VisualStateManager.VisualStateGroups>
+      <VisualStateGroup x:Name="WidthStates">
+        <VisualState x:Name="NarrowLayout">
+          <VisualState.StateTriggers>
+            <AdaptiveTrigger MinWindowWidth="0" />
+          </VisualState.StateTriggers>
+          <VisualState.Setters>
+            <Setter Target="HeaderInner.Padding" Value="10,8,10,8" />
+            <Setter Target="HeaderTitle.FontSize" Value="19" />
+            <Setter Target="RefreshLabel.Visibility" Value="Collapsed" />
+            <Setter Target="RefreshButton.Padding" Value="11,9" />
+            <Setter Target="StatusCounts.MaxWidth" Value="185" />
+            <Setter Target="TabBar.Margin" Value="8,8,8,10" />
+            <Setter Target="ContentColumn.Padding" Value="8,0,8,28" />
+          </VisualState.Setters>
+        </VisualState>
+        <VisualState x:Name="WideLayout">
+          <VisualState.StateTriggers>
+            <AdaptiveTrigger MinWindowWidth="640" />
+          </VisualState.StateTriggers>
+          <VisualState.Setters>
+            <Setter Target="HeaderInner.Padding" Value="16,10,16,8" />
+            <Setter Target="HeaderTitle.FontSize" Value="22" />
+            <Setter Target="RefreshLabel.Visibility" Value="Visible" />
+            <Setter Target="RefreshButton.Padding" Value="16,9" />
+            <Setter Target="StatusCounts.MaxWidth" Value="420" />
+            <Setter Target="TabBar.Margin" Value="16,8,16,10" />
+            <Setter Target="ContentColumn.Padding" Value="16,0,16,32" />
+          </VisualState.Setters>
+        </VisualState>
+      </VisualStateGroup>
+    </VisualStateManager.VisualStateGroups>
+
     <!-- ======== HEADER (below the status-bar safe area) ======== -->
     <!-- Border keeps the bar full-bleed while the inner Grid stays centred and capped. -->
-    <Border Grid.Row="0" Background="{ThemeResource HeaderBackgroundBrush}">
-    <Grid Padding="16,10,16,6"
+    <Border Grid.Row="0"
+            Background="{ThemeResource HeaderBackgroundBrush}"
+            BorderBrush="{ThemeResource CardBorderBrush}"
+            BorderThickness="0,0,0,1">
+    <Grid x:Name="HeaderInner"
+          Padding="16,10,16,8"
           MaxWidth="{StaticResource ContentMaxWidth}"
           HorizontalAlignment="Stretch"
           ColumnDefinitions="*,Auto,Auto">
       <StackPanel VerticalAlignment="Center">
         <StackPanel Orientation="Horizontal" Spacing="8">
-          <Ellipse Width="10"
+          <!-- Fades while a refresh is in flight, so the feed visibly has a pulse. -->
+          <Ellipse x:Name="LiveDot"
+                   Width="10"
                    Height="10"
                    VerticalAlignment="Center"
-                   Fill="{ThemeResource AccentBrush}" />
-          <TextBlock FontSize="22"
+                   Fill="{ThemeResource AccentBrush}"
+                   Opacity="{Binding IsRefreshing, Converter={StaticResource BoolToDimOpacity}}" />
+          <TextBlock x:Name="HeaderTitle"
+                     FontSize="22"
                      FontWeight="Bold"
                      Foreground="{ThemeResource HeadingBrush}"
                      Text="How's It Going" />
         </StackPanel>
-        <TextBlock Margin="18,2,0,0"
-                   FontSize="12"
-                   Foreground="{ThemeResource MutedBrush}"
-                   Text="{Binding StatusBanner}"
-                   TextWrapping="Wrap" />
+        <!-- Counts trim before the freshness readout does: knowing the feed is live matters more
+             on a phone than the exact totals, which are one tap away anyway. -->
+        <!-- Auto columns keep the freshness readout tucked against the counts instead of stranding
+             it at the far edge of a 900px header. The counts carry the MaxWidth (set per state
+             below) so a long error banner truncates rather than pushing the freshness out. -->
+        <Grid Margin="18,2,0,0"
+              HorizontalAlignment="Left"
+              ColumnDefinitions="Auto,Auto">
+          <!-- NoWrap matters as much as the trimming: left to wrap, a long banner grows the
+               header by a whole line on a phone every time the counts get wide. -->
+          <TextBlock x:Name="StatusCounts"
+                     FontSize="12"
+                     Foreground="{ThemeResource MutedBrush}"
+                     MaxWidth="420"
+                     Text="{Binding StatusBanner}"
+                     TextTrimming="CharacterEllipsis"
+                     TextWrapping="NoWrap" />
+          <TextBlock Grid.Column="1"
+                     Margin="6,0,0,0"
+                     FontSize="12"
+                     Foreground="{ThemeResource MutedBrush}"
+                     Opacity="0.65"
+                     Text="{Binding FeedFreshness}"
+                     TextWrapping="NoWrap" />
+        </Grid>
       </StackPanel>
 
       <Button x:Name="ThemeToggleButton"
@@ -114,21 +181,31 @@
                   Glyph="&#xE793;" />
       </Button>
 
-      <Button Grid.Column="2"
+      <Button x:Name="RefreshButton"
+              Grid.Column="2"
               Padding="16,9"
               VerticalAlignment="Center"
               Background="{ThemeResource AccentBrush}"
               Click="RefreshButton_Click"
               CornerRadius="10"
               Foreground="White">
-        <TextBlock FontSize="13" FontWeight="SemiBold" Text="Refresh" />
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                    FontSize="14"
+                    Foreground="White"
+                    Glyph="&#xE72C;" />
+          <!-- Collapsed on phones: the glyph reads fine on its own and the width buys the
+               status line enough room to show the counts and the freshness together. -->
+          <TextBlock x:Name="RefreshLabel" FontSize="13" FontWeight="SemiBold" Text="Refresh" />
+        </StackPanel>
       </Button>
     </Grid>
     </Border>
 
     <!-- ======== SEGMENTED TAB BAR ======== -->
-    <Border Grid.Row="1"
-            Margin="16,6,16,10"
+    <Border x:Name="TabBar"
+            Grid.Row="1"
+            Margin="16,8,16,10"
             Padding="4"
             MaxWidth="{StaticResource ContentMaxWidth}"
             Background="{ThemeResource TabBarBackgroundBrush}"
@@ -197,7 +274,8 @@
                   HorizontalScrollBarVisibility="Disabled"
                   HorizontalScrollMode="Disabled"
                   VerticalScrollBarVisibility="Auto">
-      <StackPanel Padding="16,0,16,32"
+      <StackPanel x:Name="ContentColumn"
+                  Padding="16,0,16,32"
                   MaxWidth="{StaticResource ContentMaxWidth}"
                   HorizontalAlignment="Stretch">
 
@@ -538,6 +616,137 @@
                            Foreground="{ThemeResource AccentBrush}"
                            Text="Open Latest Release" />
               </Button>
+            </StackPanel>
+          </Border>
+
+          <!-- Browser push. Hidden outside the web app, where the Push API does not exist. -->
+          <Border Padding="14"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="14"
+                  Visibility="{Binding PushSupported, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel Spacing="10">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="2">
+                  <TextBlock FontSize="15"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource HeadingBrush}"
+                             Text="Push notifications" />
+                  <TextBlock FontSize="12"
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="{Binding PushStatus}"
+                             TextWrapping="Wrap" />
+                </StackPanel>
+                <ToggleSwitch x:Name="PushToggle"
+                              Grid.Column="1"
+                              VerticalAlignment="Top"
+                              IsOn="{Binding PushSubscribed, Mode=OneWay}"
+                              OffContent=""
+                              OnContent=""
+                              Toggled="PushToggle_Toggled" />
+              </Grid>
+
+              <StackPanel Spacing="10" Visibility="{Binding PushSubscribed, Converter={StaticResource BoolToVisibility}}">
+                <Border Height="1" Background="{ThemeResource SeparatorBrush}" />
+
+                <TextBlock FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource BodyBrush}"
+                           Text="Alert types" />
+                <StackPanel Spacing="2">
+                  <CheckBox Content="Codex thread completed" IsChecked="{Binding PushOnCodexCompleted, Mode=TwoWay}" />
+                  <CheckBox Content="GitHub push" IsChecked="{Binding PushOnGitHubPush, Mode=TwoWay}" />
+                  <CheckBox Content="Agent thread started" IsChecked="{Binding PushOnAgentStarted, Mode=TwoWay}" />
+                  <CheckBox Content="Agent run failed" IsChecked="{Binding PushOnAgentFailed, Mode=TwoWay}" />
+                  <CheckBox Content="Follow-up completed" IsChecked="{Binding PushOnFollowUpCompleted, Mode=TwoWay}" />
+                  <CheckBox Content="Follow-up failed" IsChecked="{Binding PushOnFollowUpFailed, Mode=TwoWay}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                  <TextBlock FontSize="12"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource BodyBrush}"
+                             Text="Only these repositories (comma separated, blank for all)" />
+                  <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                           BorderBrush="{ThemeResource CardBorderBrush}"
+                           CornerRadius="8"
+                           PlaceholderText="howsitgoing, marvijo-betting-solution"
+                           Text="{Binding PushRepositories, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                  <TextBlock FontSize="12"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource BodyBrush}"
+                             Text="Only when the title or message contains" />
+                  <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                           BorderBrush="{ThemeResource CardBorderBrush}"
+                           CornerRadius="8"
+                           PlaceholderText="blank for no keyword filter"
+                           Text="{Binding PushKeyword, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+
+                <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                  <StackPanel Spacing="4">
+                    <TextBlock FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource BodyBrush}"
+                               Text="Quiet from (hour)" />
+                    <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                             BorderBrush="{ThemeResource CardBorderBrush}"
+                             CornerRadius="8"
+                             PlaceholderText="22"
+                             Text="{Binding PushQuietHoursStart, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="1" Spacing="4">
+                    <TextBlock FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource BodyBrush}"
+                               Text="Quiet until (hour)" />
+                    <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                             BorderBrush="{ThemeResource CardBorderBrush}"
+                             CornerRadius="8"
+                             PlaceholderText="7"
+                             Text="{Binding PushQuietHoursEnd, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="2" Spacing="4">
+                    <TextBlock FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource BodyBrush}"
+                               Text="Min gap (seconds)" />
+                    <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                             BorderBrush="{ThemeResource CardBorderBrush}"
+                             CornerRadius="8"
+                             PlaceholderText="0"
+                             Text="{Binding PushMinIntervalSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                  </StackPanel>
+                </Grid>
+
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Button Padding="16,8"
+                          Background="{ThemeResource AccentBrush}"
+                          BorderThickness="0"
+                          Click="SavePushPreferences_Click"
+                          CornerRadius="8">
+                    <TextBlock FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="White"
+                               Text="Save filters" />
+                  </Button>
+                  <Button Padding="16,8"
+                          Background="Transparent"
+                          BorderBrush="{ThemeResource CardBorderBrush}"
+                          BorderThickness="1"
+                          Click="SendTestPush_Click"
+                          CornerRadius="8">
+                    <TextBlock FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource AccentBrush}"
+                               Text="Send test" />
+                  </Button>
+                </StackPanel>
+              </StackPanel>
             </StackPanel>
           </Border>
 

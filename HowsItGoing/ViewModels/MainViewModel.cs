@@ -25,6 +25,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _agentModel = CodexLaunchDefaults.DefaultModel;
     private string _agentReasoningEffort = CodexLaunchDefaults.DefaultReasoningEffort;
     private string _statusBanner = "Loading\u2026";
+    private string _feedFreshness = string.Empty;
+    private bool _isRefreshing;
+    private DateTimeOffset? _lastRefreshedAt;
     private string _repositorySummary = string.Empty;
     private string _updateSummary = string.Empty;
     private string? _releaseUrl;
@@ -32,6 +35,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _notificationWarning = string.Empty;
     private string _themePreference = "Dark";
     private int _refreshInFlight;
+    private bool _pushSupported;
+    private bool _pushSubscribed;
+    private string _pushStatus = "Checking push support…";
+    private bool _pushOnCodexCompleted = true;
+    private bool _pushOnGitHubPush = true;
+    private bool _pushOnAgentStarted = true;
+    private bool _pushOnAgentFailed = true;
+    private bool _pushOnFollowUpCompleted = true;
+    private bool _pushOnFollowUpFailed = true;
+    private string _pushRepositories = string.Empty;
+    private string _pushKeyword = string.Empty;
+    private string _pushMinIntervalSeconds = "0";
+    private string _pushQuietHoursStart = string.Empty;
+    private string _pushQuietHoursEnd = string.Empty;
+    private string? _pushEndpoint;
+    private string? _vapidPublicKey;
 
     /// <summary>Upper bound for one refresh pass, so the in-flight guard always clears.</summary>
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(60);
@@ -166,6 +185,36 @@ public sealed class MainViewModel : INotifyPropertyChanged
         private set => SetProperty(ref _statusBanner, value);
     }
 
+    /// <summary>
+    /// How long ago the feed last loaded, e.g. "updated 12s ago". Driven by the page's tick rather
+    /// than by refreshes so a feed that has stopped updating visibly ages instead of sitting on a
+    /// stale "just now" - the symptom that made the browser head look alive when it was not.
+    /// </summary>
+    public string FeedFreshness
+    {
+        get => _feedFreshness;
+        private set => SetProperty(ref _feedFreshness, value);
+    }
+
+    /// <summary>True while a refresh is in flight; drives the header's live indicator.</summary>
+    public bool IsRefreshing
+    {
+        get => _isRefreshing;
+        private set => SetProperty(ref _isRefreshing, value);
+    }
+
+    /// <summary>Recomputes <see cref="FeedFreshness"/> from the clock. Cheap; call it on every tick.</summary>
+    public void UpdateFeedFreshness()
+    {
+        if (_lastRefreshedAt is not { } refreshedAt)
+        {
+            FeedFreshness = string.Empty;
+            return;
+        }
+
+        FeedFreshness = Contracts.FeedFreshness.Describe(DateTimeOffset.UtcNow - refreshedAt);
+    }
+
     public string RepositorySummary
     {
         get => _repositorySummary;
@@ -200,6 +249,92 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         get => _themePreference;
         private set => SetProperty(ref _themePreference, value);
+    }
+
+    /// <summary>True only in the browser head, once the Push API has been confirmed available.</summary>
+    public bool PushSupported
+    {
+        get => _pushSupported;
+        private set => SetProperty(ref _pushSupported, value);
+    }
+
+    public bool PushSubscribed
+    {
+        get => _pushSubscribed;
+        private set => SetProperty(ref _pushSubscribed, value);
+    }
+
+    public string PushStatus
+    {
+        get => _pushStatus;
+        private set => SetProperty(ref _pushStatus, value);
+    }
+
+    public bool PushOnCodexCompleted
+    {
+        get => _pushOnCodexCompleted;
+        set => SetProperty(ref _pushOnCodexCompleted, value);
+    }
+
+    public bool PushOnGitHubPush
+    {
+        get => _pushOnGitHubPush;
+        set => SetProperty(ref _pushOnGitHubPush, value);
+    }
+
+    public bool PushOnAgentStarted
+    {
+        get => _pushOnAgentStarted;
+        set => SetProperty(ref _pushOnAgentStarted, value);
+    }
+
+    public bool PushOnAgentFailed
+    {
+        get => _pushOnAgentFailed;
+        set => SetProperty(ref _pushOnAgentFailed, value);
+    }
+
+    public bool PushOnFollowUpCompleted
+    {
+        get => _pushOnFollowUpCompleted;
+        set => SetProperty(ref _pushOnFollowUpCompleted, value);
+    }
+
+    public bool PushOnFollowUpFailed
+    {
+        get => _pushOnFollowUpFailed;
+        set => SetProperty(ref _pushOnFollowUpFailed, value);
+    }
+
+    /// <summary>Comma-separated repository filters; empty means every repository.</summary>
+    public string PushRepositories
+    {
+        get => _pushRepositories;
+        set => SetProperty(ref _pushRepositories, value);
+    }
+
+    public string PushKeyword
+    {
+        get => _pushKeyword;
+        set => SetProperty(ref _pushKeyword, value);
+    }
+
+    public string PushMinIntervalSeconds
+    {
+        get => _pushMinIntervalSeconds;
+        set => SetProperty(ref _pushMinIntervalSeconds, value);
+    }
+
+    public string PushQuietHoursStart
+    {
+        get => _pushQuietHoursStart;
+        set => SetProperty(ref _pushQuietHoursStart, value);
+    }
+
+    public string PushQuietHoursEnd
+    {
+        get => _pushQuietHoursEnd;
+        set => SetProperty(ref _pushQuietHoursEnd, value);
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -247,6 +382,308 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await _settingsStore.SaveAsync(existing with { ThemePreference = preference }, cancellationToken);
     }
 
+    // ---- Web push for the feed -----------------------------------------------------------------
+
+    /// <summary>
+    /// Brings up the push card: loads the browser module, reads back whatever this browser is already
+    /// subscribed to, and mirrors the bridge-side preferences into the editable properties. Safe to
+    /// call on every head - it simply reports "unsupported" outside the browser.
+    /// </summary>
+    public async Task InitializePushAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            PushSupported = await WebPushCoordinator.InitializeAsync();
+            if (!PushSupported)
+            {
+                PushStatus = "Push notifications need the web app in a browser that supports the Push API.";
+                return;
+            }
+
+            var config = await _bridgeApiClient.GetPushConfigAsync(cancellationToken);
+            if (config is null || !config.IsConfigured || string.IsNullOrWhiteSpace(config.PublicKey))
+            {
+                PushStatus = "The bridge is not offering push notifications right now.";
+                PushSupported = false;
+                return;
+            }
+
+            _vapidPublicKey = config.PublicKey;
+
+            var subscription = await WebPushCoordinator.GetSubscriptionAsync();
+            if (subscription is null)
+            {
+                PushSubscribed = false;
+                PushStatus = await WebPushCoordinator.GetPermissionAsync() == "denied"
+                    ? "This browser has blocked notifications. Allow them in site settings to enable push."
+                    : "Push is off. Turn it on to get feed alerts when the app is closed.";
+                return;
+            }
+
+            _pushEndpoint = subscription.Endpoint;
+            var status = await _bridgeApiClient.GetPushSubscriptionAsync(subscription.Endpoint, cancellationToken);
+
+            if (status is null || !status.IsSubscribed)
+            {
+                // The browser still holds a subscription the bridge has forgotten (a pruned endpoint,
+                // or a different bridge). Re-register it so the two sides agree again.
+                await SavePushSubscriptionAsync(subscription, BuildPreferences(), cancellationToken);
+                return;
+            }
+
+            ApplyPreferences(status.Preferences);
+            PushSubscribed = true;
+            PushStatus = FormatPushStatus(status);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            PushStatus = FormatRequestFailure("Push setup failed", ex);
+        }
+    }
+
+    /// <summary>Subscribes or unsubscribes this browser, driven by the toggle in the Alerts panel.</summary>
+    public async Task SetPushEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        if (!PushSupported || enabled == PushSubscribed)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!enabled)
+            {
+                var removed = await WebPushCoordinator.UnsubscribeAsync() ?? _pushEndpoint;
+                if (!string.IsNullOrEmpty(removed))
+                {
+                    await _bridgeApiClient.RemovePushSubscriptionAsync(removed, cancellationToken);
+                }
+
+                _pushEndpoint = null;
+                PushSubscribed = false;
+                PushStatus = "Push is off.";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_vapidPublicKey))
+            {
+                PushStatus = "The bridge has not supplied a push key yet. Refresh and try again.";
+                return;
+            }
+
+            PushStatus = "Asking the browser for permission…";
+            var subscription = await WebPushCoordinator.SubscribeAsync(_vapidPublicKey);
+            _pushEndpoint = subscription.Endpoint;
+            await SavePushSubscriptionAsync(subscription, BuildPreferences(), cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            PushSubscribed = false;
+            PushStatus = FormatRequestFailure("Push failed", ex);
+        }
+    }
+
+    /// <summary>Pushes the edited filters to the bridge, which is where they are actually applied.</summary>
+    public async Task SavePushPreferencesAsync(CancellationToken cancellationToken = default)
+    {
+        if (!PushSubscribed || string.IsNullOrEmpty(_pushEndpoint))
+        {
+            PushStatus = "Turn push on before saving filters.";
+            return;
+        }
+
+        var kinds = SelectedPushKinds();
+        if (kinds.Count == 0)
+        {
+            // An empty list means "everything" on the wire, so saving one here would silently do the
+            // opposite of what unticking every box looks like.
+            PushStatus = "Pick at least one alert type, or switch push off.";
+            return;
+        }
+
+        try
+        {
+            var subscription = await WebPushCoordinator.GetSubscriptionAsync();
+            if (subscription is null)
+            {
+                PushSubscribed = false;
+                PushStatus = "The browser dropped this push subscription. Turn push on again.";
+                return;
+            }
+
+            await SavePushSubscriptionAsync(subscription, BuildPreferences(), cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            PushStatus = FormatRequestFailure("Saving push filters failed", ex);
+        }
+    }
+
+    /// <summary>Sends one push straight past the filters, so the user can prove the plumbing works.</summary>
+    public async Task SendTestPushAsync(CancellationToken cancellationToken = default)
+    {
+        if (!PushSubscribed || string.IsNullOrEmpty(_pushEndpoint))
+        {
+            PushStatus = "Turn push on before sending a test.";
+            return;
+        }
+
+        try
+        {
+            PushStatus = "Sending a test push…";
+            var result = await _bridgeApiClient.SendTestPushAsync(_pushEndpoint, cancellationToken);
+
+            PushStatus = result switch
+            {
+                null => "The bridge did not answer the test push.",
+                { Delivered: > 0 } => "Test push sent - it should appear as a system notification.",
+                { Removed: > 0 } => "The push service rejected this subscription. Turn push off and on again.",
+                { Errors.Count: > 0 } => $"Test push failed: {result.Errors[0]}",
+                _ => "The test push was not delivered."
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            PushStatus = FormatRequestFailure("Test push failed", ex);
+        }
+    }
+
+    private async Task SavePushSubscriptionAsync(
+        WebPushSubscriptionInfo subscription,
+        WebPushPreferencesDto preferences,
+        CancellationToken cancellationToken)
+    {
+        var status = await _bridgeApiClient.SavePushSubscriptionAsync(
+            new WebPushSubscribeRequest(
+                subscription.Endpoint,
+                new WebPushKeysDto(subscription.P256dh, subscription.Auth),
+                Label: "Web app",
+                subscription.ExpiresAt,
+                preferences),
+            cancellationToken);
+
+        _pushEndpoint = subscription.Endpoint;
+        PushSubscribed = status?.IsSubscribed ?? false;
+        PushStatus = status is null
+            ? "The bridge did not confirm the push subscription."
+            : FormatPushStatus(status);
+    }
+
+    private WebPushPreferencesDto BuildPreferences()
+    {
+        var repositories = PushRepositories
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        return new WebPushPreferencesDto(
+            Enabled: true,
+            Kinds: SelectedPushKinds(),
+            Repositories: repositories,
+            Keyword: string.IsNullOrWhiteSpace(PushKeyword) ? null : PushKeyword.Trim(),
+            MinIntervalSeconds: ParseBoundedInt(PushMinIntervalSeconds, 0, 0, 86_400),
+            QuietHoursStart: ParseHour(PushQuietHoursStart),
+            QuietHoursEnd: ParseHour(PushQuietHoursEnd),
+            // The bridge has no idea where the browser is, so quiet hours travel with the offset.
+            UtcOffsetMinutes: (int)DateTimeOffset.Now.Offset.TotalMinutes);
+    }
+
+    private void ApplyPreferences(WebPushPreferencesDto preferences)
+    {
+        var kinds = preferences.Kinds;
+        var all = kinds is null || kinds.Count == 0;
+
+        PushOnCodexCompleted = all || kinds!.Contains(BridgeNotificationKind.CodexThreadCompleted);
+        PushOnGitHubPush = all || kinds!.Contains(BridgeNotificationKind.GitHubPush);
+        PushOnAgentStarted = all || kinds!.Contains(BridgeNotificationKind.AgentThreadStarted);
+        PushOnAgentFailed = all || kinds!.Contains(BridgeNotificationKind.AgentRunFailed);
+        PushOnFollowUpCompleted = all || kinds!.Contains(BridgeNotificationKind.FollowUpCompleted);
+        PushOnFollowUpFailed = all || kinds!.Contains(BridgeNotificationKind.FollowUpFailed);
+
+        PushRepositories = preferences.Repositories is { Count: > 0 } repositories
+            ? string.Join(", ", repositories)
+            : string.Empty;
+        PushKeyword = preferences.Keyword ?? string.Empty;
+        PushMinIntervalSeconds = preferences.MinIntervalSeconds.ToString();
+        PushQuietHoursStart = preferences.QuietHoursStart?.ToString() ?? string.Empty;
+        PushQuietHoursEnd = preferences.QuietHoursEnd?.ToString() ?? string.Empty;
+    }
+
+    private List<BridgeNotificationKind> SelectedPushKinds()
+    {
+        var kinds = new List<BridgeNotificationKind>();
+        if (PushOnCodexCompleted)
+        {
+            kinds.Add(BridgeNotificationKind.CodexThreadCompleted);
+        }
+
+        if (PushOnGitHubPush)
+        {
+            kinds.Add(BridgeNotificationKind.GitHubPush);
+        }
+
+        if (PushOnAgentStarted)
+        {
+            kinds.Add(BridgeNotificationKind.AgentThreadStarted);
+        }
+
+        if (PushOnAgentFailed)
+        {
+            kinds.Add(BridgeNotificationKind.AgentRunFailed);
+        }
+
+        if (PushOnFollowUpCompleted)
+        {
+            kinds.Add(BridgeNotificationKind.FollowUpCompleted);
+        }
+
+        if (PushOnFollowUpFailed)
+        {
+            kinds.Add(BridgeNotificationKind.FollowUpFailed);
+        }
+
+        return kinds;
+    }
+
+    private static string FormatPushStatus(WebPushSubscriptionStatusDto status)
+    {
+        if (!status.IsSubscribed)
+        {
+            return "Push is off.";
+        }
+
+        var parts = new List<string>();
+
+        var kinds = status.Preferences.Kinds;
+        parts.Add(kinds is null || kinds.Count is 0 or 6 ? "all alerts" : $"{kinds.Count} alert types");
+
+        if (status.Preferences.Repositories is { Count: > 0 } repositories)
+        {
+            parts.Add($"repos: {string.Join(", ", repositories)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.Preferences.Keyword))
+        {
+            parts.Add($"keyword “{status.Preferences.Keyword}”");
+        }
+
+        if (status.Preferences is { QuietHoursStart: { } quietStart, QuietHoursEnd: { } quietEnd })
+        {
+            parts.Add($"quiet {quietStart:00}:00-{quietEnd:00}:00");
+        }
+
+        if (status.Preferences.MinIntervalSeconds > 0)
+        {
+            parts.Add($"at most every {status.Preferences.MinIntervalSeconds}s");
+        }
+
+        return $"Push is on · {string.Join(" · ", parts)}";
+    }
+
+    private static int ParseBoundedInt(string value, int fallback, int minimum, int maximum) =>
+        int.TryParse(value, out var parsed) ? Math.Clamp(parsed, minimum, maximum) : fallback;
+
+    private static int? ParseHour(string value) =>
+        int.TryParse(value, out var parsed) && parsed is >= 0 and <= 23 ? parsed : null;
+
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref _refreshInFlight, 1) == 1)
@@ -262,6 +699,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
+            IsRefreshing = true;
             StatusBanner = "Refreshing\u2026";
 
             // Core data drives the banner, so it is awaited first and on its own. The
@@ -279,7 +717,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var notifications = await _bridgeApiClient.GetNotificationsAsync(null, 30, token);
             SynchronizeCollection(Notifications, notifications, notification => notification.Id);
 
-            StatusBanner = $"{Sessions.Count} sessions \u00B7 {Notifications.Count} notifications";
+            // Stamped once the feed itself is published, not after the auxiliary GitHub calls, so
+            // the readout tracks the session list the user is actually looking at.
+            _lastRefreshedAt = DateTimeOffset.UtcNow;
+            UpdateFeedFreshness();
+            // "alerts" rather than "notifications" to match the tab of the same name, and because
+            // the shorter word keeps this on one line next to the freshness readout on a phone.
+            StatusBanner = $"{Sessions.Count} sessions \u00B7 {Notifications.Count} alerts";
 
             // Re-read the base URL in case the BridgeApiClient auto-resolved a different one.
             var latestSettings = await _settingsStore.LoadAsync(token);
@@ -295,6 +739,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         finally
         {
+            IsRefreshing = false;
             Interlocked.Exchange(ref _refreshInFlight, 0);
         }
     }

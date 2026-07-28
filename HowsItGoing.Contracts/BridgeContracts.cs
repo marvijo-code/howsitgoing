@@ -192,6 +192,69 @@ public sealed record BridgeNotificationDto(
     string? RelatedRepository,
     string? RelatedUrl);
 
+/// <summary>
+/// The two browser-supplied keys of a Web Push subscription (RFC 8291), base64url without padding.
+/// <paramref name="P256dh"/> is the uncompressed P-256 point of the user agent; <paramref name="Auth"/>
+/// is the 16-byte authentication secret.
+/// </summary>
+public sealed record WebPushKeysDto(string P256dh, string Auth);
+
+/// <summary>
+/// Per-subscription delivery rules for feed pushes. Every filter is opt-in: an empty list or a null
+/// value means "no restriction", so a freshly-subscribed browser receives everything until the user
+/// narrows it down. Evaluated by the bridge (not the browser) so a sleeping device still gets the
+/// filtering it asked for.
+/// </summary>
+/// <param name="Enabled">Master switch. False keeps the subscription registered but silent.</param>
+/// <param name="Kinds">Notification kinds to deliver. Empty means every kind.</param>
+/// <param name="Repositories">
+/// Case-insensitive substring match against the notification's related repository. That field holds a
+/// GitHub slug for pushes and a working directory for agent events, so a substring is the only match
+/// that works for both. Empty means every repository.
+/// </param>
+/// <param name="Keyword">Case-insensitive substring that must appear in the title or message.</param>
+/// <param name="MinIntervalSeconds">Minimum gap between pushes to this subscription. 0 disables throttling.</param>
+/// <param name="QuietHoursStart">Local hour (0-23) at which pushes stop. Null disables quiet hours.</param>
+/// <param name="QuietHoursEnd">Local hour (0-23) at which pushes resume. May wrap past midnight.</param>
+/// <param name="UtcOffsetMinutes">The subscriber's offset from UTC, so quiet hours are evaluated in its local time.</param>
+public sealed record WebPushPreferencesDto(
+    bool Enabled = true,
+    IReadOnlyList<BridgeNotificationKind>? Kinds = null,
+    IReadOnlyList<string>? Repositories = null,
+    string? Keyword = null,
+    int MinIntervalSeconds = 0,
+    int? QuietHoursStart = null,
+    int? QuietHoursEnd = null,
+    int UtcOffsetMinutes = 0);
+
+public sealed record WebPushSubscribeRequest(
+    string Endpoint,
+    WebPushKeysDto Keys,
+    string? Label = null,
+    DateTimeOffset? ExpiresAt = null,
+    WebPushPreferencesDto? Preferences = null);
+
+public sealed record WebPushUnsubscribeRequest(string Endpoint);
+
+/// <summary>What the browser needs before it can call <c>PushManager.subscribe</c>.</summary>
+public sealed record WebPushConfigDto(
+    bool IsConfigured,
+    string? PublicKey,
+    string? Subject);
+
+public sealed record WebPushSubscriptionStatusDto(
+    bool IsSubscribed,
+    string? Label,
+    WebPushPreferencesDto Preferences,
+    DateTimeOffset? UpdatedAt,
+    DateTimeOffset? LastPushedAt);
+
+public sealed record WebPushSendResultDto(
+    int Delivered,
+    int Filtered,
+    int Removed,
+    IReadOnlyList<string> Errors);
+
 public sealed record RepositoryStatusDto(
     string? Owner,
     string? Name,

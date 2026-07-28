@@ -9,7 +9,19 @@ public sealed partial class MainPage : Page
 {
     private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(30);
 
-    private readonly DispatcherTimer _autoRefreshTimer = new() { Interval = AutoRefreshInterval };
+    /// <summary>
+    /// The timer ticks far more often than <see cref="AutoRefreshInterval"/> and each tick decides
+    /// for itself whether a refresh is due. A tick-per-interval timer loses time it can never make
+    /// up on the browser head - mobile browsers throttle background timers to about once a minute
+    /// and freeze them entirely while the tab is hidden - so the feed came back stale after every
+    /// unlock. Checking elapsed wall-clock instead means the first tick after a wake-up refreshes.
+    /// </summary>
+    private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(5);
+
+    private readonly DispatcherTimer _autoRefreshTimer = new() { Interval = TickInterval };
+
+    private DateTimeOffset _lastRefreshStartedAt = DateTimeOffset.MinValue;
+    private int _lastResumeToken;
 
     public MainViewModel ViewModel { get; }
 
@@ -27,16 +39,35 @@ public sealed partial class MainPage : Page
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
         HookSafeAreaInsets();
+        await WebLifecycleCoordinator.InitializeAsync();
+        _lastResumeToken = WebLifecycleCoordinator.ResumeToken;
+        _lastRefreshStartedAt = DateTimeOffset.UtcNow;
         _autoRefreshTimer.Start();
         await ViewModel.InitializeAsync();
         await SyncMonitoringAsync();
         ApplyThemeGlyph();
+        await ViewModel.InitializePushAsync();
+        SyncPushToggle();
     }
 
     private void MainPage_Unloaded(object sender, RoutedEventArgs e) => _autoRefreshTimer.Stop();
 
     private async void AutoRefreshTimer_Tick(object? sender, object e)
     {
+        // Keep the "updated Xs ago" readout moving on every tick, not just on the ticks that
+        // refresh, so a feed that has gone quiet visibly ages instead of looking current.
+        ViewModel.UpdateFeedFreshness();
+
+        var resumeToken = WebLifecycleCoordinator.ResumeToken;
+        var resumed = resumeToken != _lastResumeToken;
+        _lastResumeToken = resumeToken;
+
+        if (!resumed && DateTimeOffset.UtcNow - _lastRefreshStartedAt < AutoRefreshInterval)
+        {
+            return;
+        }
+
+        _lastRefreshStartedAt = DateTimeOffset.UtcNow;
         await ViewModel.RefreshAsync();
     }
 
@@ -123,6 +154,39 @@ public sealed partial class MainPage : Page
         sendButton.Parent is Grid composerRow
             ? composerRow.Children.OfType<TextBox>().FirstOrDefault()
             : null;
+
+    private async void PushToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleSwitch toggle || !ViewModel.PushSupported)
+        {
+            return;
+        }
+
+        // Also fires when the view model drives IsOn; SetPushEnabledAsync no-ops when nothing changed.
+        await ViewModel.SetPushEnabledAsync(toggle.IsOn);
+
+        // A refused permission leaves the switch on while the view model says off, and the OneWay
+        // binding cannot correct that on its own because the bound value never changed.
+        SyncPushToggle();
+    }
+
+    private void SyncPushToggle()
+    {
+        if (PushToggle.IsOn != ViewModel.PushSubscribed)
+        {
+            PushToggle.IsOn = ViewModel.PushSubscribed;
+        }
+    }
+
+    private async void SavePushPreferences_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.SavePushPreferencesAsync();
+    }
+
+    private async void SendTestPush_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.SendTestPushAsync();
+    }
 
     private async void OpenRelease_Click(object sender, RoutedEventArgs e)
     {
