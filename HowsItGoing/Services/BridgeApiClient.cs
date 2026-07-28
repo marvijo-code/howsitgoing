@@ -179,6 +179,68 @@ public sealed class BridgeApiClient
         }
     }
 
+    /// <summary>
+    /// The VAPID public key the browser needs before it can subscribe. No shared-store fallback: push
+    /// registration is meaningless without a bridge to send from.
+    /// </summary>
+    public async Task<WebPushConfigDto?> GetPushConfigAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await GetDirectAsync<WebPushConfigDto>("/api/push/config", cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken))
+        {
+            return null;
+        }
+    }
+
+    public async Task<WebPushSubscriptionStatusDto?> GetPushSubscriptionAsync(string endpoint, CancellationToken cancellationToken = default)
+    {
+        var url = BuildEndpoint("/api/push/subscription", new Dictionary<string, string?> { ["endpoint"] = endpoint });
+
+        try
+        {
+            return await GetDirectAsync<WebPushSubscriptionStatusDto>(url, cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken))
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Registers a subscription, or updates the preferences of one already registered.</summary>
+    public Task<WebPushSubscriptionStatusDto?> SavePushSubscriptionAsync(WebPushSubscribeRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<WebPushSubscribeRequest, WebPushSubscriptionStatusDto>("/api/push/subscribe", request, cancellationToken);
+
+    public Task<WebPushSubscriptionStatusDto?> RemovePushSubscriptionAsync(string endpoint, CancellationToken cancellationToken = default) =>
+        PostAsync<WebPushUnsubscribeRequest, WebPushSubscriptionStatusDto>("/api/push/unsubscribe", new WebPushUnsubscribeRequest(endpoint), cancellationToken);
+
+    public Task<WebPushSendResultDto?> SendTestPushAsync(string endpoint, CancellationToken cancellationToken = default) =>
+        PostAsync<WebPushUnsubscribeRequest, WebPushSendResultDto>("/api/push/test", new WebPushUnsubscribeRequest(endpoint), cancellationToken);
+
+    private async Task<TResponse?> PostAsync<TRequest, TResponse>(string relativeUrl, TRequest request, CancellationToken cancellationToken)
+    {
+        var settings = await _settingsStore.LoadAsync(cancellationToken);
+        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+        using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
+        using var response = await SendWithRetryAsync(
+            token => client.PostAsJsonAsync(relativeUrl, request, SerializerOptions, token),
+            cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(detail)
+                    ? $"Bridge returned {(int)response.StatusCode} {response.ReasonPhrase}."
+                    : detail.Trim());
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonSerializer.DeserializeAsync<TResponse>(stream, SerializerOptions, cancellationToken);
+    }
+
     private async Task<T?> GetDirectAsync<T>(string relativeUrl, CancellationToken cancellationToken)
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);

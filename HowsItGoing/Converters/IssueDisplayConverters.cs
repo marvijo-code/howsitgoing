@@ -148,6 +148,33 @@ public sealed class CollectionToVisibilityConverter : IValueConverter
         throw new NotSupportedException();
 }
 
+/// <summary>True -> Visible, otherwise Collapsed. Pass parameter "invert" to flip.</summary>
+public sealed class BoolToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        var isTrue = value is true;
+        var invert = string.Equals(parameter as string, "invert", StringComparison.OrdinalIgnoreCase);
+        return isTrue != invert ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language) =>
+        throw new NotSupportedException();
+}
+
+/// <summary>
+/// Dims an element while a bound flag is true. Drives the header's live dot, which fades during a
+/// refresh so the feed reads as alive without a storyboard running on the browser head.
+/// </summary>
+public sealed class BoolToDimOpacityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language) =>
+        value is true ? 0.35d : 1.0d;
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language) =>
+        throw new NotSupportedException();
+}
+
 public sealed class StringToVisibilityConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, string language) =>

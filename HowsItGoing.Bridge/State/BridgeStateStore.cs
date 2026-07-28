@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HowsItGoing.Bridge.Push;
 using HowsItGoing.Contracts;
 
 namespace HowsItGoing.Bridge.State;
@@ -7,10 +8,13 @@ public sealed class BridgeStateStore
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _statePath;
+    private readonly NotificationBroadcaster _broadcaster;
     private PersistentBridgeState _state;
 
-    public BridgeStateStore()
+    public BridgeStateStore(NotificationBroadcaster broadcaster)
     {
+        _broadcaster = broadcaster;
+
         var baseDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "HowsItGoing",
@@ -109,6 +113,10 @@ public sealed class BridgeStateStore
         {
             _gate.Release();
         }
+
+        // Published after the id check above, so a notification re-reported by a poller cannot push
+        // twice, and outside the gate so a slow push service never blocks the feed.
+        _broadcaster.Publish(notification);
     }
 
     private PersistentBridgeState LoadState()
