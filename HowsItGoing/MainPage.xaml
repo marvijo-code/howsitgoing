@@ -90,7 +90,6 @@
             <Setter Target="HeaderTitle.FontSize" Value="19" />
             <Setter Target="RefreshLabel.Visibility" Value="Collapsed" />
             <Setter Target="RefreshButton.Padding" Value="11,9" />
-            <Setter Target="StatusCounts.MaxWidth" Value="185" />
             <Setter Target="TabBar.Margin" Value="8,8,8,10" />
             <Setter Target="ContentColumn.Padding" Value="8,0,8,28" />
           </VisualState.Setters>
@@ -104,7 +103,6 @@
             <Setter Target="HeaderTitle.FontSize" Value="22" />
             <Setter Target="RefreshLabel.Visibility" Value="Visible" />
             <Setter Target="RefreshButton.Padding" Value="16,9" />
-            <Setter Target="StatusCounts.MaxWidth" Value="420" />
             <Setter Target="TabBar.Margin" Value="16,8,16,10" />
             <Setter Target="ContentColumn.Padding" Value="16,0,16,32" />
           </VisualState.Setters>
@@ -122,48 +120,50 @@
           Padding="16,10,16,8"
           MaxWidth="{StaticResource ContentMaxWidth}"
           HorizontalAlignment="Stretch"
+          RowDefinitions="Auto,Auto"
           ColumnDefinitions="*,Auto,Auto">
-      <StackPanel VerticalAlignment="Center">
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <!-- Fades while a refresh is in flight, so the feed visibly has a pulse. -->
-          <Ellipse x:Name="LiveDot"
-                   Width="10"
-                   Height="10"
-                   VerticalAlignment="Center"
-                   Fill="{ThemeResource AccentBrush}"
-                   Opacity="{Binding IsRefreshing, Converter={StaticResource BoolToDimOpacity}}" />
-          <TextBlock x:Name="HeaderTitle"
-                     FontSize="22"
-                     FontWeight="Bold"
-                     Foreground="{ThemeResource HeadingBrush}"
-                     Text="How's It Going" />
-        </StackPanel>
-        <!-- Counts trim before the freshness readout does: knowing the feed is live matters more
-             on a phone than the exact totals, which are one tap away anyway. -->
-        <!-- Auto columns keep the freshness readout tucked against the counts instead of stranding
-             it at the far edge of a 900px header. The counts carry the MaxWidth (set per state
-             below) so a long error banner truncates rather than pushing the freshness out. -->
-        <Grid Margin="18,2,0,0"
-              HorizontalAlignment="Left"
-              ColumnDefinitions="Auto,Auto">
-          <!-- NoWrap matters as much as the trimming: left to wrap, a long banner grows the
-               header by a whole line on a phone every time the counts get wide. -->
-          <TextBlock x:Name="StatusCounts"
-                     FontSize="12"
-                     Foreground="{ThemeResource MutedBrush}"
-                     MaxWidth="420"
-                     Text="{Binding StatusBanner}"
-                     TextTrimming="CharacterEllipsis"
-                     TextWrapping="NoWrap" />
-          <TextBlock Grid.Column="1"
-                     Margin="6,0,0,0"
-                     FontSize="12"
-                     Foreground="{ThemeResource MutedBrush}"
-                     Opacity="0.65"
-                     Text="{Binding FeedFreshness}"
-                     TextWrapping="NoWrap" />
-        </Grid>
+      <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+        <!-- Fades while a refresh is in flight, so the feed visibly has a pulse. -->
+        <Ellipse x:Name="LiveDot"
+                 Width="10"
+                 Height="10"
+                 VerticalAlignment="Center"
+                 Fill="{ThemeResource AccentBrush}"
+                 Opacity="{Binding IsRefreshing, Converter={StaticResource BoolToDimOpacity}}" />
+        <TextBlock x:Name="HeaderTitle"
+                   FontSize="22"
+                   FontWeight="Bold"
+                   Foreground="{ThemeResource HeadingBrush}"
+                   Text="How's It Going" />
       </StackPanel>
+
+      <!-- The status line is its own full-width row, not a second line tucked under the title.
+           Sharing the title's column left it competing with the two buttons for the same 320px,
+           which cut "· just now" down to "· just" on a phone - the one readout that tells you the
+           feed is alive. Spanning all three columns gives it the whole screen width. -->
+      <Grid Grid.Row="1"
+            Grid.ColumnSpan="3"
+            Margin="0,3,0,0"
+            ColumnDefinitions="*,Auto">
+        <!-- The counts take the star column and trim before the freshness readout does: knowing
+             the feed is live matters more on a phone than the exact totals, which are one tap
+             away anyway. NoWrap matters as much as the trimming - left to wrap, a long error
+             banner grows the header by a whole line every time the counts get wide. -->
+        <TextBlock x:Name="StatusCounts"
+                   FontSize="12"
+                   HorizontalAlignment="Left"
+                   Foreground="{ThemeResource MutedBrush}"
+                   Text="{Binding StatusBanner}"
+                   TextTrimming="CharacterEllipsis"
+                   TextWrapping="NoWrap" />
+        <TextBlock Grid.Column="1"
+                   Margin="8,0,0,0"
+                   FontSize="12"
+                   Foreground="{ThemeResource MutedBrush}"
+                   Opacity="0.65"
+                   Text="{Binding FeedFreshness}"
+                   TextWrapping="NoWrap" />
+      </Grid>
 
       <Button x:Name="ThemeToggleButton"
               Grid.Column="1"
@@ -403,18 +403,27 @@
                                TextWrapping="Wrap" />
 
                     <!-- repo + branch -->
-                    <Grid ColumnDefinitions="*,Auto">
+                    <!-- The branch column is Auto but capped: uncapped, a name like
+                         "feat/bench-e11-correctscore-confound" claims the whole row, leaves the
+                         directory zero width, and still spills past the card's right edge. -->
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" MaxWidth="150" />
+                      </Grid.ColumnDefinitions>
                       <TextBlock FontSize="11"
                                  Foreground="{ThemeResource MutedBrush}"
                                  Text="{Binding WorkingDirectory}"
                                  TextTrimming="CharacterEllipsis"
+                                 TextWrapping="NoWrap"
                                  MaxLines="1" />
                       <TextBlock Grid.Column="1"
                                  Margin="8,0,0,0"
                                  FontSize="11"
                                  Foreground="{ThemeResource AccentDimBrush}"
                                  Text="{Binding GitBranch}"
-                                 TextTrimming="CharacterEllipsis" />
+                                 TextTrimming="CharacterEllipsis"
+                                 TextWrapping="NoWrap" />
                     </Grid>
 
                     <!-- last message -->
@@ -870,13 +879,17 @@
                                  FontWeight="SemiBold"
                                  Foreground="{ThemeResource AccentDimBrush}"
                                  Text="{Binding Number, Converter={StaticResource NumberToHash}}" />
+                      <!-- NoWrap is what keeps this on one line. TextTrimming alone does not stop
+                           Uno wrapping, so a squeezed phone column broke "marvijo-code/marvijo-
+                           betting-solution" across lines and, narrower still, near-vertically. -->
                       <TextBlock Grid.Column="2"
                                  Margin="8,0,0,0"
                                  VerticalAlignment="Center"
                                  FontSize="11"
                                  Foreground="{ThemeResource MutedBrush}"
                                  Text="{Binding Repository}"
-                                 TextTrimming="CharacterEllipsis" />
+                                 TextTrimming="CharacterEllipsis"
+                                 TextWrapping="NoWrap" />
                       <TextBlock Grid.Column="3"
                                  VerticalAlignment="Center"
                                  FontSize="11"
@@ -932,7 +945,8 @@
                                          FontSize="11"
                                          Foreground="{ThemeResource MutedBrush}"
                                          Text="{Binding Branch}"
-                                         TextTrimming="CharacterEllipsis" />
+                                         TextTrimming="CharacterEllipsis"
+                                         TextWrapping="NoWrap" />
                             </Grid>
                           </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -998,13 +1012,17 @@
                                  FontWeight="SemiBold"
                                  Foreground="{ThemeResource AccentDimBrush}"
                                  Text="{Binding Number, Converter={StaticResource NumberToHash}}" />
+                      <!-- NoWrap is what keeps this on one line. TextTrimming alone does not stop
+                           Uno wrapping, so a squeezed phone column broke "marvijo-code/marvijo-
+                           betting-solution" across lines and, narrower still, near-vertically. -->
                       <TextBlock Grid.Column="2"
                                  Margin="8,0,0,0"
                                  VerticalAlignment="Center"
                                  FontSize="11"
                                  Foreground="{ThemeResource MutedBrush}"
                                  Text="{Binding Repository}"
-                                 TextTrimming="CharacterEllipsis" />
+                                 TextTrimming="CharacterEllipsis"
+                                 TextWrapping="NoWrap" />
                       <TextBlock Grid.Column="3"
                                  VerticalAlignment="Center"
                                  FontSize="11"
@@ -1022,7 +1040,10 @@
                                TextWrapping="Wrap" />
 
                     <!-- checks + branch -->
-                    <StackPanel Orientation="Horizontal" Spacing="6">
+                    <!-- A Grid, not a horizontal StackPanel: a StackPanel measures its children
+                         with infinite width, so trimming never kicks in and a long head branch
+                         runs straight off the card. -->
+                    <Grid ColumnDefinitions="Auto,*">
                       <Border Padding="8,3"
                               Visibility="{Binding Checks, Converter={StaticResource CheckStatusToVisibility}}"
                               CornerRadius="6"
@@ -1033,12 +1054,15 @@
                                    Foreground="{Binding Checks, Converter={StaticResource CheckStatusToBrush}}"
                                    Text="{Binding Checks, Converter={StaticResource CheckStatusToLabel}}" />
                       </Border>
-                      <TextBlock VerticalAlignment="Center"
+                      <TextBlock Grid.Column="1"
+                                 Margin="6,0,0,0"
+                                 VerticalAlignment="Center"
                                  FontSize="11"
                                  Foreground="{ThemeResource AccentDimBrush}"
                                  Text="{Binding HeadBranch}"
-                                 TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
+                                 TextTrimming="CharacterEllipsis"
+                                 TextWrapping="NoWrap" />
+                    </Grid>
 
                     <!-- author -->
                     <TextBlock FontSize="12"
