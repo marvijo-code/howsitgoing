@@ -24,6 +24,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _agentPrompt = "Summarize the current repo status and stop.";
     private string _agentModel = CodexLaunchDefaults.DefaultModel;
     private string _agentReasoningEffort = CodexLaunchDefaults.DefaultReasoningEffort;
+    private string _agentProvider = AgentProviders.Codex;
     private string _statusBanner = "Loading\u2026";
     private string _feedFreshness = string.Empty;
     private bool _isRefreshing;
@@ -54,6 +55,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// <summary>Upper bound for one refresh pass, so the in-flight guard always clears.</summary>
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Cards in the Sessions list are realised eagerly, so this is a rendering budget rather than a
+    /// data limit. The feed answers "what is happening now", which the newest slice already covers.
+    /// </summary>
+    private const int MaxRenderedSessions = 25;
 
     public MainViewModel(BridgeApiClient bridgeApiClient, AppSettingsStore settingsStore)
     {
@@ -178,6 +185,46 @@ public sealed class MainViewModel : INotifyPropertyChanged
         get => _agentReasoningEffort;
         set => SetProperty(ref _agentReasoningEffort, value);
     }
+
+    /// <summary>
+    /// The harness New Run launches. Switching provider also swaps in that provider's model slug
+    /// when the box still holds another provider's default, so a tap never sends a Codex slug to
+    /// OpenCode or vice versa.
+    /// </summary>
+    public string AgentProvider
+    {
+        get => _agentProvider;
+        set
+        {
+            var resolved = AgentProviders.Resolve(value);
+            if (!AgentProviders.IsKnown(resolved))
+            {
+                return;
+            }
+
+            if (!SetProperty(ref _agentProvider, resolved))
+            {
+                return;
+            }
+
+            var previousDefaults = AgentProviders.All
+                .Select(AgentProviders.DefaultModelFor)
+                .ToList();
+            if (previousDefaults.Contains(AgentModel.Trim(), StringComparer.Ordinal))
+            {
+                AgentModel = AgentProviders.DefaultModelFor(resolved);
+            }
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AgentProviderLabel)));
+        }
+    }
+
+    public string AgentProviderLabel => AgentProvider switch
+    {
+        AgentProviders.CodexOpenRouter => "Codex on OpenRouter",
+        AgentProviders.OpenCode => "OpenCode",
+        _ => "Codex (subscription)"
+    };
 
     public string StatusBanner
     {
@@ -345,6 +392,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             BridgeBaseUrl = settings.BridgeBaseUrl;
             MonitoringEnabled = settings.MonitoringEnabled;
             AgentRepoPath = settings.AgentRepoPath;
+            AgentProvider = settings.AgentProvider;
             AgentModel = settings.AgentModel;
             AgentReasoningEffort = settings.AgentReasoningEffort;
             IssueRepositories = settings.IssueRepositories;
@@ -367,6 +415,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             AgentRepoPath = AgentRepoPath.Trim(),
             AgentModel = CodexLaunchDefaults.ResolveModel(AgentModel),
             AgentReasoningEffort = CodexLaunchDefaults.ResolveReasoningEffort(AgentReasoningEffort),
+            AgentProvider = AgentProvider,
             IssueRepositories = IssueRepositories.Trim(),
             ThemePreference = ThemePreference,
             LastSeenNotificationAt = existing.LastSeenNotificationAt
@@ -712,7 +761,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 IncludeArchived,
                 token);
 
-            SynchronizeCollection(Sessions, sessions, session => $"{session.Agent}:{session.Id}");
+            // The Sessions panel is an ItemsControl, so every card is realised at once. 180 rich cards
+            // with borders, badges and an expander lock the phone's UI thread for minutes (taps then
+            // hit the 5s input timeout and the system kills the app). Render the newest slice only.
+            var visibleSessions = sessions.Count > MaxRenderedSessions
+                ? sessions.Take(MaxRenderedSessions).ToArray()
+                : sessions;
+
+            SynchronizeCollection(Sessions, visibleSessions, session => $"{session.Agent}:{session.Id}");
+
+            // Publish what the user came for as soon as the sessions land. Notifications are a large
+            // payload and the auxiliary GitHub calls are slower still, so waiting for them left the
+            // header on "Refreshing…" for over a minute on a phone.
+            StatusBanner = visibleSessions.Count == sessions.Count
+                ? $"{visibleSessions.Count} sessions"
+                : $"{visibleSessions.Count} of {sessions.Count} sessions";
+            _lastRefreshedAt = DateTimeOffset.UtcNow;
+            UpdateFeedFreshness();
 
             var notifications = await _bridgeApiClient.GetNotificationsAsync(null, 30, token);
             SynchronizeCollection(Notifications, notifications, notification => notification.Id);
@@ -818,14 +883,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     AgentRepoPath,
                     AgentPrompt,
                     AgentModel,
-                    AgentReasoningEffort),
+                    AgentReasoningEffort,
+                    provider: AgentProvider),
                 cancellationToken);
 
-            LaunchResult = response?.ThreadId is null
-                ? response?.LaunchMode == "shared-queue-pending"
-                    ? "Run request was queued in the shared store. Keep the bridge online so it can start Codex and publish the real thread id."
-                    : "Codex run launched, but no thread id was received before the timeout."
-                : $"Started thread {response.ThreadId} in {response.RepoPath}.";
+            LaunchResult = response is null
+                ? "Launch returned no response."
+                : AgentProvider == AgentProviders.OpenCode
+                    ? $"Started an OpenCode run in {response.RepoPath}. It appears in Sessions once OpenCode registers it."
+                    : response.ThreadId is null
+                        ? response.LaunchMode == "shared-queue-pending"
+                            ? "Run request was queued in the shared store. Keep the bridge online so it can start Codex and publish the real thread id."
+                            : "Codex run launched, but no thread id was received before the timeout."
+                        : $"Started thread {response.ThreadId} in {response.RepoPath}.";
         }
         catch (Exception ex)
         {

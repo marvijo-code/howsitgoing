@@ -16,6 +16,12 @@ public sealed class BridgeApiClient
     private readonly AppSettingsStore _settingsStore;
     private readonly SharedBridgeStore _sharedStore;
 
+    private static readonly TimeSpan ResolvedBaseUrlLifetime = TimeSpan.FromMinutes(5);
+
+    private string? _resolvedBaseUrl;
+    private string? _resolvedConfiguredBaseUrl;
+    private DateTimeOffset _resolvedAt;
+
     public BridgeApiClient(AppSettingsStore settingsStore, SharedBridgeStore sharedStore)
     {
         _settingsStore = settingsStore;
@@ -272,11 +278,22 @@ public sealed class BridgeApiClient
     private async Task<string> ResolveBaseUrlAsync(AppSettings settings, CancellationToken cancellationToken)
     {
         var configuredBaseUrl = NormalizeBaseUrl(settings.BridgeBaseUrl);
+
+        // Probing /healthz on every call cost an extra round trip per API request, which on a phone
+        // over adb reverse is most of the refresh. A resolved URL is reused until the configured
+        // value changes or the short cache window expires.
+        if (_resolvedBaseUrl is not null &&
+            string.Equals(_resolvedConfiguredBaseUrl, configuredBaseUrl, StringComparison.OrdinalIgnoreCase) &&
+            DateTimeOffset.UtcNow - _resolvedAt < ResolvedBaseUrlLifetime)
+        {
+            return _resolvedBaseUrl;
+        }
+
         var candidates = BuildCandidateBaseUrls(configuredBaseUrl);
 
         if (candidates.Count == 1)
         {
-            return configuredBaseUrl;
+            return Remember(configuredBaseUrl, configuredBaseUrl);
         }
 
         foreach (var candidate in candidates)
@@ -291,10 +308,18 @@ public sealed class BridgeApiClient
                 await _settingsStore.SaveAsync(settings with { BridgeBaseUrl = candidate.TrimEnd('/') }, cancellationToken);
             }
 
-            return candidate;
+            return Remember(configuredBaseUrl, candidate);
         }
 
         return configuredBaseUrl;
+    }
+
+    private string Remember(string configuredBaseUrl, string resolvedBaseUrl)
+    {
+        _resolvedConfiguredBaseUrl = configuredBaseUrl;
+        _resolvedBaseUrl = resolvedBaseUrl;
+        _resolvedAt = DateTimeOffset.UtcNow;
+        return resolvedBaseUrl;
     }
 
     private static IReadOnlyList<string> BuildCandidateBaseUrls(string configuredBaseUrl)

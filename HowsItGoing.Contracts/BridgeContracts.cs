@@ -16,13 +16,47 @@ public static class CodexLaunchDefaults
         string prompt,
         string? model,
         string? reasoningEffort,
-        bool allowOutsideGitRepo = true) =>
+        bool allowOutsideGitRepo = true,
+        string? provider = null) =>
         new(
             repoPath.Trim(),
             prompt.Trim(),
             ResolveModel(model),
             ResolveReasoningEffort(reasoningEffort),
-            allowOutsideGitRepo);
+            allowOutsideGitRepo,
+            AgentProviders.Resolve(provider));
+}
+
+/// <summary>
+/// Who the bridge launches for a New Run. <see cref="Codex"/> stays on the machine's own Codex
+/// login; <see cref="CodexOpenRouter"/> keeps the same Codex CLI but routes the model through
+/// OpenRouter with per-launch <c>-c</c> overrides, so <c>~/.codex/config.toml</c> is untouched;
+/// <see cref="OpenCode"/> runs the OpenCode CLI instead.
+/// </summary>
+public static class AgentProviders
+{
+    public const string Codex = "codex";
+    public const string CodexOpenRouter = "codex-openrouter";
+    public const string OpenCode = "opencode";
+
+    public static readonly IReadOnlyList<string> All = [Codex, CodexOpenRouter, OpenCode];
+
+    public static string Resolve(string? provider) =>
+        string.IsNullOrWhiteSpace(provider) ? Codex : provider.Trim().ToLowerInvariant();
+
+    public static bool IsKnown(string provider) =>
+        All.Contains(provider, StringComparer.Ordinal);
+
+    /// <summary>
+    /// Model slugs differ per provider: Codex takes a bare slug, OpenCode needs the provider prefix
+    /// because it resolves the model through its own registry.
+    /// </summary>
+    public static string DefaultModelFor(string provider) => provider switch
+    {
+        CodexOpenRouter => "deepseek/deepseek-v4.1-flash",
+        OpenCode => "openrouter/deepseek/deepseek-v4.1-flash",
+        _ => CodexLaunchDefaults.DefaultModel
+    };
 }
 
 public static class AgentKinds
@@ -275,7 +309,8 @@ public sealed record StartCodexRunRequest(
     string Prompt,
     string? Model,
     string? ReasoningEffort = null,
-    bool AllowOutsideGitRepo = true);
+    bool AllowOutsideGitRepo = true,
+    string? Provider = null);
 
 public sealed record StartCodexRunResponse(
     string? ThreadId,

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using HowsItGoing.Contracts;
 
 namespace HowsItGoing.Bridge.Services;
 
@@ -53,6 +54,22 @@ internal static partial class RequestGuards
         }
 
         return trimmed.ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Only the providers the bridge knows how to launch may reach the launcher. An unknown value
+    /// is rejected rather than defaulted, so a typo cannot silently start the wrong harness.
+    /// </summary>
+    internal static string ValidateProvider(string? provider)
+    {
+        var resolved = AgentProviders.Resolve(provider);
+        if (!AgentProviders.IsKnown(resolved))
+        {
+            throw new ArgumentException(
+                $"provider must be one of: {string.Join(", ", AgentProviders.All)}.");
+        }
+
+        return resolved;
     }
 
     /// <summary>

@@ -44,10 +44,14 @@ public sealed partial class MainPage : Page
         _lastRefreshStartedAt = DateTimeOffset.UtcNow;
         _autoRefreshTimer.Start();
         await ViewModel.InitializeAsync();
-        await SyncMonitoringAsync();
         ApplyThemeGlyph();
         await ViewModel.InitializePushAsync();
         SyncPushToggle();
+
+        // The monitoring service asks for the notification permission, which blocks on a system
+        // dialog. Awaiting it here held up the rest of startup (and the refresh) on a phone where
+        // the dialog sat unanswered, so it runs after the first paint.
+        _ = SyncMonitoringAsync();
     }
 
     private void MainPage_Unloaded(object sender, RoutedEventArgs e) => _autoRefreshTimer.Stop();
@@ -124,6 +128,15 @@ public sealed partial class MainPage : Page
     {
         await ViewModel.StartAgentAsync();
     }
+
+    private void ProviderCodex_Click(object sender, RoutedEventArgs e) =>
+        ViewModel.AgentProvider = AgentProviders.Codex;
+
+    private void ProviderOpenRouter_Click(object sender, RoutedEventArgs e) =>
+        ViewModel.AgentProvider = AgentProviders.CodexOpenRouter;
+
+    private void ProviderOpenCode_Click(object sender, RoutedEventArgs e) =>
+        ViewModel.AgentProvider = AgentProviders.OpenCode;
 
     private async void SendFollowUp_Click(object sender, RoutedEventArgs e)
     {

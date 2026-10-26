@@ -16,6 +16,11 @@ public sealed record AppSettings
 
     public string AgentModel { get; init; } = HowsItGoing.Contracts.CodexLaunchDefaults.DefaultModel;
 
+    /// <summary>
+    /// Which harness New Run starts: <c>codex</c>, <c>codex-openrouter</c>, or <c>opencode</c>.
+    /// </summary>
+    public string AgentProvider { get; init; } = HowsItGoing.Contracts.AgentProviders.Codex;
+
     public string AgentReasoningEffort { get; init; } = HowsItGoing.Contracts.CodexLaunchDefaults.DefaultReasoningEffort;
 
     public DateTimeOffset? LastSeenNotificationAt { get; init; }

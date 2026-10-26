@@ -1146,7 +1146,32 @@
               <TextBlock FontSize="15"
                          FontWeight="SemiBold"
                          Foreground="{ThemeResource HeadingBrush}"
-                         Text="Start a Codex Thread" />
+                         Text="Start a Run" />
+
+              <TextBlock FontSize="11" FontWeight="SemiBold"
+                         Foreground="{ThemeResource MutedBrush}"
+                         Text="PROVIDER" CharacterSpacing="60" />
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button Padding="10,6" CornerRadius="8" Click="ProviderCodex_Click"
+                        Background="{ThemeResource InputBackgroundBrush}"
+                        Foreground="{ThemeResource HeadingBrush}">
+                  <TextBlock FontSize="12" Text="Codex" />
+                </Button>
+                <Button Padding="10,6" CornerRadius="8" Click="ProviderOpenRouter_Click"
+                        Background="{ThemeResource InputBackgroundBrush}"
+                        Foreground="{ThemeResource HeadingBrush}">
+                  <TextBlock FontSize="12" Text="OpenRouter" />
+                </Button>
+                <Button Padding="10,6" CornerRadius="8" Click="ProviderOpenCode_Click"
+                        Background="{ThemeResource InputBackgroundBrush}"
+                        Foreground="{ThemeResource HeadingBrush}">
+                  <TextBlock FontSize="12" Text="OpenCode" />
+                </Button>
+              </StackPanel>
+              <TextBlock FontSize="11"
+                         Foreground="{ThemeResource BodyBrush}"
+                         Text="{Binding AgentProviderLabel}"
+                         TextWrapping="NoWrap" />
 
               <TextBlock FontSize="11" FontWeight="SemiBold"
                          Foreground="{ThemeResource MutedBrush}"

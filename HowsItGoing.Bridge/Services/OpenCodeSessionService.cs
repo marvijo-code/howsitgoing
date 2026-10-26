@@ -67,11 +67,16 @@ public sealed class OpenCodeSessionService
         await connection.OpenAsync(cancellationToken);
 
         var rows = new List<OpenCodeSessionRow>();
+        // OpenCode 2.x writes to `session_v2` and leaves the 1.x `session` table behind, so reading
+        // `session` alone shows month-old sessions and misses every new run. Prefer v2 when present.
+        var sessionsTableIsV2 = await TableExistsAsync(connection, "session_v2", cancellationToken);
+        var sessionsTable = sessionsTableIsV2 ? "session_v2" : "session";
+
         await using (var command = connection.CreateCommand())
         {
-            command.CommandText = """
+            command.CommandText = $"""
                 select id, directory, title, time_created, time_updated, time_archived
-                from session
+                from {sessionsTable}
                 where parent_id is null
                   and (@includeArchived = 1 or time_archived is null)
                 order by time_updated desc
@@ -97,11 +102,81 @@ public sealed class OpenCodeSessionService
         foreach (var row in rows)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var lastMessage = await ReadLastAssistantMessageAsync(connection, row.Id, cancellationToken);
+            var lastMessage = sessionsTableIsV2
+                ? await ReadLastAssistantMessageV2Async(connection, row.Id, cancellationToken)
+                : await ReadLastAssistantMessageAsync(connection, row.Id, cancellationToken);
             results.Add(ToDto(row, lastMessage));
         }
 
         return results;
+    }
+
+    private static async Task<bool> TableExistsAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select count(*) from sqlite_master where type = 'table' and name = @name;";
+        command.Parameters.AddWithValue("@name", table);
+        var count = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt64(count, System.Globalization.CultureInfo.InvariantCulture) > 0;
+    }
+
+    /// <summary>
+    /// OpenCode 2.x keeps one row per message in <c>session_message</c> and stores the reply as a
+    /// <c>content</c> array, so the answer is the last text item rather than a <c>part</c> row.
+    /// </summary>
+    private static async Task<string?> ReadLastAssistantMessageV2Async(
+        SqliteConnection connection,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select data
+            from session_message
+            where session_id = @sessionId
+              and type = 'assistant'
+            order by time_created desc
+            limit 1;
+            """;
+        command.Parameters.AddWithValue("@sessionId", sessionId);
+
+        var data = await command.ExecuteScalarAsync(cancellationToken) as string;
+        if (string.IsNullOrWhiteSpace(data))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(data);
+            if (!document.RootElement.TryGetProperty("content", out var content) ||
+                content.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            string? text = null;
+            foreach (var item in content.EnumerateArray())
+            {
+                if (item.TryGetProperty("type", out var type) &&
+                    type.ValueKind == JsonValueKind.String &&
+                    type.GetString() == "text" &&
+                    item.TryGetProperty("text", out var value) &&
+                    value.ValueKind == JsonValueKind.String)
+                {
+                    text = value.GetString();
+                }
+            }
+
+            return text;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static async Task<string?> ReadLastAssistantMessageAsync(
