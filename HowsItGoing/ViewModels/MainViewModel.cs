@@ -38,7 +38,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _themePreference = "Dark";
     private int _refreshInFlight;
     private int _sessionTotalCount;
-    private string? _sessionCursor;
+    private int _sessionPageIndex;
     private bool _isLoadingMoreSessions;
     private DateTimeOffset _lastIssuesRefreshAt = DateTimeOffset.MinValue;
     private DateTimeOffset _lastAuxiliaryRefreshAt = DateTimeOffset.MinValue;
@@ -79,15 +79,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// <summary>
     /// Cards in the Sessions list are paginated for a reason: an ItemsControl realises every card,
-    /// and 180 rich cards once locked the phone's UI thread long enough for Android to kill the app.
+    /// and 30 rich cards (border, badges, expander, composer) were enough to block the phone's UI
+    /// thread past Android's 5s input timeout. Ten keeps a page instant while the pager still walks
+    /// the whole 13k mirror.
     /// </summary>
-    private const int SessionPageSize = SessionPaging.DefaultPageSize;
-
-    /// <summary>
-    /// Ceiling on what one refresh re-reads. A user who has paged deep gets their loaded window
-    /// refreshed, but the 30s tick never becomes a 13k-row download.
-    /// </summary>
-    private const int MaxSessionsRefreshed = 120;
+    private const int SessionPageSize = 10;
 
     public MainViewModel(BridgeApiClient bridgeApiClient, AppSettingsStore settingsStore, FeedCacheStore feedCache)
     {
@@ -314,7 +310,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         FeedFreshness = Contracts.FeedFreshness.Describe(DateTimeOffset.UtcNow - refreshedAt);
     }
 
-    /// <summary>Rows matching the current filters, not just the rows loaded so far.</summary>
+    /// <summary>Rows matching the current filters, not just the rows on this page.</summary>
     public int SessionTotalCount
     {
         get => _sessionTotalCount;
@@ -322,46 +318,35 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _sessionTotalCount, value))
             {
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMoreSessions)));
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionFeedSummary)));
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoadMoreSessionsLabel)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionPageLabel)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionPageCount)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasNextPage)));
             }
         }
     }
+
+    /// <summary>1-based page number shown in the pager.</summary>
+    public int SessionPageNumber => _sessionPageIndex + 1;
+
+    public int SessionPageCount => Math.Max(1, (int)Math.Ceiling(SessionTotalCount / (double)SessionPageSize));
+
+    public bool HasPreviousPage => _sessionPageIndex > 0;
+
+    public bool HasNextPage => _sessionPageIndex + 1 < SessionPageCount;
+
+    public string SessionPageLabel => $"Page {SessionPageNumber} of {SessionPageCount}";
 
     public bool IsLoadingMoreSessions
     {
         get => _isLoadingMoreSessions;
-        private set
-        {
-            if (SetProperty(ref _isLoadingMoreSessions, value))
-            {
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoadMoreSessionsLabel)));
-            }
-        }
+        private set => SetProperty(ref _isLoadingMoreSessions, value);
     }
 
-    public bool HasMoreSessions => Sessions.Count < SessionTotalCount;
-
-    public string SessionFeedSummary => SessionTotalCount > Sessions.Count
-        ? $"{Sessions.Count:N0} of {SessionTotalCount:N0} sessions"
-        : $"{SessionTotalCount:N0} sessions";
-
-    public string LoadMoreSessionsLabel => IsLoadingMoreSessions
-        ? "Loading\u2026"
-        : HasMoreSessions
-            ? $"Load more ({Sessions.Count:N0} of {SessionTotalCount:N0})"
-            : "All sessions loaded";
+    public string SessionFeedSummary => $"{SessionTotalCount:N0} sessions";
 
     /// <summary>True while the Issues tab is the one on screen; the GitHub board only refreshes then.</summary>
     public bool IssuesTabActive { get; set; }
-
-    /// <summary>
-    /// Set by the page while the user is reading further down the feed. A 30s tick must not yank
-    /// the list back to the newest card under their thumb; the next tick after they return to the
-    /// top (or an explicit Refresh) publishes again.
-    /// </summary>
-    public bool PauseSessionUpdates { get; set; }
 
     public string RepositorySummary
     {
@@ -1140,22 +1125,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 Sessions.Clear();
                 SessionTotalCount = 0;
-                _sessionCursor = null;
+                _sessionPageIndex = 0;
                 _lastRefreshedAt = null;
+                NotifySessionPageChanged();
             }
 
-            // Core data drives the banner, so it is awaited first and on its own. The
-            // auxiliary calls below are GitHub-backed and can take tens of seconds.
-            var requestedLimit = SessionPaging.ClampPageSize(
-                Math.Max(SessionPageSize, Math.Min(Sessions.Count, MaxSessionsRefreshed)));
+            // The pager asks for one window at a time; a filter change or explicit Refresh starts
+            // at the newest page, and the tick reloads whichever page is on screen.
             var page = await _bridgeApiClient.GetSessionsPageAsync(
                 SearchQuery,
                 SelectedStatus == "All" ? null : SelectedStatus,
                 source: null,
                 SelectedAgent == "All" ? null : AgentKinds.Normalize(SelectedAgent),
                 IncludeArchived,
-                offset: 0,
-                limit: requestedLimit,
+                offset: _sessionPageIndex * SessionPageSize,
+                limit: SessionPageSize,
                 token);
 
             if (page is null)
@@ -1163,13 +1147,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 throw new InvalidOperationException("The bridge returned no session page.");
             }
 
-            // While the user is scrolled into older cards, publish the count but leave the rows
-            // alone: replacing them resets the list under their thumb every 30 seconds.
-            if (resetPaging || !PauseSessionUpdates)
-            {
-                SynchronizeCollection(Sessions, page.Items, session => $"{session.Agent}:{session.Id}");
-                _sessionCursor = page.NextCursor;
-            }
+            SynchronizeCollection(Sessions, page.Items, session => $"{session.Agent}:{session.Id}");
+            NotifySessionPageChanged();
 
             SessionTotalCount = page.TotalCount;
 
@@ -1212,72 +1191,75 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>
-    /// Appends the next page. Called by the list when it nears the bottom and by the Load more
-    /// button, so the feed can be walked back through all 13k mirrored sessions a page at a time.
-    /// </summary>
-    public async Task LoadMoreSessionsAsync(CancellationToken cancellationToken = default)
+    /// <summary>Shows one older page of the feed. The rows are replaced, not appended, so the number
+    /// of realised cards stays bounded no matter how far back the user walks.</summary>
+    public async Task NextSessionsPageAsync(CancellationToken cancellationToken = default)
     {
-        if (IsLoadingMoreSessions || !HasMoreSessions)
+        if (!HasNextPage)
         {
             return;
         }
 
+        _sessionPageIndex++;
+        await LoadSessionPageAsync(cancellationToken);
+    }
+
+    public async Task PreviousSessionsPageAsync(CancellationToken cancellationToken = default)
+    {
+        if (!HasPreviousPage)
+        {
+            return;
+        }
+
+        _sessionPageIndex--;
+        await LoadSessionPageAsync(cancellationToken);
+    }
+
+    private async Task LoadSessionPageAsync(CancellationToken cancellationToken = default)
+    {
         IsLoadingMoreSessions = true;
         try
         {
-            var offset = Sessions.Count;
             var page = await _bridgeApiClient.GetSessionsPageAsync(
                 SearchQuery,
                 SelectedStatus == "All" ? null : SelectedStatus,
                 source: null,
                 SelectedAgent == "All" ? null : AgentKinds.Normalize(SelectedAgent),
                 IncludeArchived,
-                offset,
-                SessionPageSize,
-                cancellationToken,
-                cursor: _sessionCursor);
+                offset: _sessionPageIndex * SessionPageSize,
+                limit: SessionPageSize,
+                cancellationToken);
 
             if (page is null)
             {
-                StatusBanner = "Could not load more sessions - the bridge is unreachable.";
+                StatusBanner = "Could not load that page - the bridge is unreachable.";
                 return;
             }
 
-            var known = Sessions
-                .Select(session => $"{session.Agent}:{session.Id}")
-                .ToHashSet(StringComparer.Ordinal);
-            var added = 0;
-            foreach (var session in page.Items)
-            {
-                if (known.Add($"{session.Agent}:{session.Id}"))
-                {
-                    Sessions.Add(session);
-                    added++;
-                }
-            }
-
-            // A page can overlap the loaded rows when the feed shifts under us; take the server's
-            // count so "x of y" stays honest either way.
+            SynchronizeCollection(Sessions, page.Items, session => $"{session.Agent}:{session.Id}");
             SessionTotalCount = page.TotalCount;
-            _sessionCursor = page.NextCursor;
-            StatusBanner = added > 0
-                ? $"{SessionFeedSummary} \u00B7 {Notifications.Count} alerts"
-                : SessionTotalCount <= Sessions.Count
-                    ? $"{SessionFeedSummary} \u00B7 {Notifications.Count} alerts"
-                    : $"No new sessions on this page. Try Refresh.";
+            _lastRefreshedAt = DateTimeOffset.UtcNow;
+            UpdateFeedFreshness();
+            StatusBanner = $"{SessionFeedSummary} \u00B7 {Notifications.Count} alerts";
+            NotifySessionPageChanged();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            StatusBanner = FormatRequestFailure("Loading more sessions failed", ex);
+            StatusBanner = FormatRequestFailure("Loading that page failed", ex);
         }
         finally
         {
             IsLoadingMoreSessions = false;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMoreSessions)));
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionFeedSummary)));
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoadMoreSessionsLabel)));
         }
+    }
+
+    private void NotifySessionPageChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionPageNumber)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionPageCount)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionPageLabel)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasPreviousPage)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasNextPage)));
     }
 
     private void ApplyCachedFeed(FeedSnapshot? snapshot)

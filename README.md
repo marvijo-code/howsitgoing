@@ -4,8 +4,8 @@
 
 ## What It Does
 
-- Lists Codex, Claude Code, and OpenCode sessions in a paged, virtualised feed (30 per page, keyset
-  cursors, exact match count) so a 13k-row shared mirror stays fast
+- Lists Codex, Claude Code, and OpenCode sessions in a paged feed (10 cards per page with
+  Newer/Older paging, keyset cursors, exact match count) so a 13k-row shared mirror stays fast
 - Filters sessions by text, status, source, and archived state
 - Raises Android device notifications for agent and GitHub events, with configurable sound,
   vibration, importance, poll cadence, alert types and quiet hours

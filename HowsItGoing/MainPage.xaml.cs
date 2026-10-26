@@ -23,7 +23,6 @@ public sealed partial class MainPage : Page
 
     private DateTimeOffset _lastRefreshStartedAt = DateTimeOffset.MinValue;
     private int _lastResumeToken;
-    private ScrollViewer? _sessionsScroller;
 
     public MainViewModel ViewModel { get; }
 
@@ -41,7 +40,6 @@ public sealed partial class MainPage : Page
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
         HookSafeAreaInsets();
-        HookSessionsScroll();
         await WebLifecycleCoordinator.InitializeAsync();
         _lastResumeToken = WebLifecycleCoordinator.ResumeToken;
         _lastRefreshStartedAt = DateTimeOffset.UtcNow;
@@ -60,11 +58,6 @@ public sealed partial class MainPage : Page
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
     {
         _autoRefreshTimer.Stop();
-        if (_sessionsScroller is not null)
-        {
-            _sessionsScroller.ViewChanged -= SessionsScroller_ViewChanged;
-            _sessionsScroller = null;
-        }
     }
 
     private async void AutoRefreshTimer_Tick(object? sender, object e)
@@ -126,83 +119,25 @@ public sealed partial class MainPage : Page
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
-        ViewModel.PauseSessionUpdates = false;
         await ViewModel.RefreshAsync();
     }
 
     private async void ApplyFilters_Click(object sender, RoutedEventArgs e)
     {
         // A new search or filter starts from the newest page.
-        ViewModel.PauseSessionUpdates = false;
         await ViewModel.RefreshAsync(resetPaging: true);
     }
 
-    private async void LoadMoreSessions_Click(object sender, RoutedEventArgs e)
+    private async void PreviousSessionsPage_Click(object sender, RoutedEventArgs e)
     {
-        await ViewModel.LoadMoreSessionsAsync();
+        await ViewModel.PreviousSessionsPageAsync();
+        PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
     }
 
-    /// <summary>
-    /// Finds the ListView's internal scroller so the feed can page itself in as the user nears the
-    /// bottom. Uno does not surface ListViewBase.ViewChanged, and the visual tree is only complete
-    /// after the first layout, hence Loaded rather than the constructor.
-    /// </summary>
-    private void HookSessionsScroll()
+    private async void NextSessionsPage_Click(object sender, RoutedEventArgs e)
     {
-        _sessionsScroller = FindDescendant<ScrollViewer>(SessionsList);
-        if (_sessionsScroller is not null)
-        {
-            _sessionsScroller.ViewChanged += SessionsScroller_ViewChanged;
-        }
-    }
-
-    private async void SessionsScroller_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
-    {
-        if (_sessionsScroller is null)
-        {
-            return;
-        }
-
-        // Deeper than a card: do not let the 30s tick replace the rows under the user's thumb.
-        ViewModel.PauseSessionUpdates = _sessionsScroller.VerticalOffset > 40;
-
-        if (e.IsIntermediate)
-        {
-            return;
-        }
-
-        var remaining = _sessionsScroller.ScrollableHeight - _sessionsScroller.VerticalOffset;
-        if (remaining > 700 || !ViewModel.HasMoreSessions || ViewModel.IsLoadingMoreSessions)
-        {
-            return;
-        }
-
-        await ViewModel.LoadMoreSessionsAsync();
-    }
-
-    private static T? FindDescendant<T>(DependencyObject? root) where T : DependencyObject
-    {
-        if (root is null)
-        {
-            return default;
-        }
-
-        var count = VisualTreeHelper.GetChildrenCount(root);
-        for (var i = 0; i < count; i++)
-        {
-            var child = VisualTreeHelper.GetChild(root, i);
-            if (child is T match)
-            {
-                return match;
-            }
-
-            if (FindDescendant<T>(child) is { } nested)
-            {
-                return nested;
-            }
-        }
-
-        return default;
+        await ViewModel.NextSessionsPageAsync();
+        PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
     }
 
     private async void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -331,10 +266,9 @@ public sealed partial class MainPage : Page
         {
             int index = int.Parse(tag);
 
-            // Sessions owns the whole content area (its ListView scrolls itself); the other three
-            // panels share one scroller.
-            SessionsHost.Visibility = index == 0 ? Visibility.Visible : Visibility.Collapsed;
-            PanelScroller.Visibility = index == 0 ? Visibility.Collapsed : Visibility.Visible;
+            // One page-level scroller; the tabs swap panels inside it.
+            PanelScroller.Visibility = Visibility.Visible;
+            PanelSessions.Visibility = index == 0 ? Visibility.Visible : Visibility.Collapsed;
             PanelNotifications.Visibility = index == 1 ? Visibility.Visible : Visibility.Collapsed;
             PanelIssues.Visibility = index == 2 ? Visibility.Visible : Visibility.Collapsed;
             PanelAgent.Visibility = index == 3 ? Visibility.Visible : Visibility.Collapsed;
@@ -352,10 +286,7 @@ public sealed partial class MainPage : Page
                 _ = ViewModel.RefreshIssuesAsync();
             }
 
-            if (index != 0)
-            {
-                PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
-            }
+            PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
 
             SetTabVisual(TabSessions, index == 0);
             SetTabVisual(TabNotifications, index == 1);
