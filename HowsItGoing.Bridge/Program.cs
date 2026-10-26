@@ -88,6 +88,9 @@ app.MapGet("/api/sessions", async (
     string? source,
     string? agent,
     bool? includeArchived,
+    int? offset,
+    int? limit,
+    string? cursor,
     AgentSessionAggregator sessions,
     CancellationToken cancellationToken) =>
 {
@@ -98,8 +101,17 @@ app.MapGet("/api/sessions", async (
         parsedStatus = statusValue;
     }
 
-    var results = await sessions.GetSessionsAsync(query, parsedStatus, source, agent, includeArchived ?? false, cancellationToken);
-    return Results.Ok(results);
+    var page = await sessions.GetSessionsPageAsync(
+        query,
+        parsedStatus,
+        source,
+        agent,
+        includeArchived ?? false,
+        offset ?? 0,
+        limit ?? SessionPaging.DefaultPageSize,
+        cancellationToken,
+        cursor);
+    return Results.Ok(page);
 });
 
 app.MapPost("/api/sessions/follow-up", async (

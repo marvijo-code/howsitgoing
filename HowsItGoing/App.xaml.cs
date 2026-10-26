@@ -67,13 +67,16 @@ public partial class App : Application
                     });
                     services.AddSingleton<SharedBridgeStore>();
                     services.AddSingleton<AppSettingsStore>();
+                    services.AddSingleton<FeedCacheStore>();
                     services.AddSingleton<BridgeApiClient>();
                     services.AddSingleton<MainViewModel>();
                 })
             );
         MainWindow = builder.Window;
 
-        #if DEBUG
+        #if DEBUG && !ANDROID
+        // Uno Studio's floating hot-reload widget overlays the header on a phone and swallows
+        // gestures; it is a desktop authoring tool, so keep it off the Android head.
         MainWindow.UseStudio();
 #endif
 #if WINDOWS

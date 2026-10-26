@@ -216,6 +216,87 @@ public sealed record CodexSessionSummaryDto(
     DateTimeOffset? CompletedAt,
     string Agent = AgentKinds.Codex);
 
+/// <summary>
+/// One page of the session feed plus the number of rows that match the same filters. The count is
+/// what lets the app show "30 of 13,412" and decide whether another page exists without guessing.
+/// </summary>
+public sealed record SessionPageDto(
+    IReadOnlyList<CodexSessionSummaryDto> Items,
+    int TotalCount,
+    int Offset,
+    int Limit,
+    string? NextCursor = null)
+{
+    public bool HasMore => Offset + Items.Count < TotalCount;
+
+    /// <summary>The offset to request next, or null when the feed is exhausted.</summary>
+    public int? NextOffset => HasMore ? Offset + Items.Count : null;
+}
+
+/// <summary>
+/// Paging bounds and the keyset cursor shared by the app and the bridge. Offset paging costs the
+/// database a scan of every skipped row (3.4s at offset 12,000), so "load more" walks from the last
+/// row instead. The cursor is <c>utcTicks:id</c>; ticks are digits, so the first colon is the split.
+/// </summary>
+public static class SessionPaging
+{
+    public const int DefaultPageSize = 30;
+    public const int MaxPageSize = 200;
+
+    public static int ClampOffset(int offset) => Math.Max(0, offset);
+
+    public static int ClampPageSize(int limit) => Math.Clamp(limit <= 0 ? DefaultPageSize : limit, 1, MaxPageSize);
+
+    public static string CreateCursor(DateTimeOffset updatedAt, string id) =>
+        $"{updatedAt.UtcTicks}:{id}";
+
+    public static bool TryParseCursor(string? cursor, out DateTimeOffset updatedAt, out string id)
+    {
+        updatedAt = default;
+        id = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(cursor))
+        {
+            return false;
+        }
+
+        var separator = cursor.IndexOf(':');
+        if (separator <= 0 || separator == cursor.Length - 1)
+        {
+            return false;
+        }
+
+        if (!long.TryParse(cursor.AsSpan(0, separator), out var ticks) || ticks < DateTimeOffset.MinValue.UtcTicks)
+        {
+            return false;
+        }
+
+        updatedAt = new DateTimeOffset(ticks, TimeSpan.Zero);
+        id = cursor[(separator + 1)..];
+        return true;
+    }
+
+    /// <summary>Pure in-memory slice used by the local (file-backed) session feed.</summary>
+    public static SessionPageDto Slice(
+        IReadOnlyList<CodexSessionSummaryDto> ordered,
+        int offset,
+        int limit)
+    {
+        var safeOffset = ClampOffset(offset);
+        var safeLimit = ClampPageSize(limit);
+        var items = ordered
+            .Skip(safeOffset)
+            .Take(safeLimit)
+            .ToArray();
+
+        var nextCursor = safeOffset + items.Length < ordered.Count && items.Length > 0
+            ? CreateCursor(items[^1].UpdatedAt, items[^1].Id)
+            : null;
+
+        return new SessionPageDto(items, ordered.Count, safeOffset, safeLimit, nextCursor);
+    }
+}
+
 public sealed record BridgeNotificationDto(
     string Id,
     BridgeNotificationKind Kind,

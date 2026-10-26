@@ -35,4 +35,30 @@ public sealed record AppSettings
     /// Persisted theme preference: "Dark", "Light", or "System".
     /// </summary>
     public string ThemePreference { get; init; } = "Dark";
+
+    /// <summary>
+    /// Notification sound for Android alerts: <c>default</c>, <c>none</c>, or a device
+    /// <c>content://</c> ringtone URI picked in the app.
+    /// </summary>
+    public string NotificationSoundUri { get; init; } = "default";
+
+    public bool NotificationVibration { get; init; } = true;
+
+    /// <summary>"High", "Default" or "Low". High shows a heads-up banner.</summary>
+    public string NotificationImportance { get; init; } = "Default";
+
+    /// <summary>How often the foreground monitor asks the bridge for new alerts, in seconds.</summary>
+    public int NotificationPollSeconds { get; init; } = 30;
+
+    /// <summary>
+    /// Comma-separated <c>BridgeNotificationKind</c> names to raise on the phone. Empty means every
+    /// kind, so an upgrade never silently mutes alerts.
+    /// </summary>
+    public string NotificationKinds { get; init; } = string.Empty;
+
+    /// <summary>Quiet hours start hour (0-23), or -1 to disable.</summary>
+    public int NotificationQuietStartHour { get; init; } = -1;
+
+    /// <summary>Quiet hours end hour (0-23, may wrap past midnight), or -1 to disable.</summary>
+    public int NotificationQuietEndHour { get; init; } = -1;
 }
