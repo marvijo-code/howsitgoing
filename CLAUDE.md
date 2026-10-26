@@ -31,12 +31,15 @@ dotnet test HowsItGoing.Tests; dotnet test HowsItGoing.Bridge.Tests
 
 ## Rules / gotchas
 
-- **The session feed is paged, and the list must stay virtualised.** `/api/sessions?offset=&limit=&cursor=`
+- **The session feed is paged, and the Sessions tab uses the page-level ScrollViewer.** `/api/sessions?offset=&limit=&cursor=`
   returns `SessionPageDto` (items + total + next cursor); the shared MySQL mirror uses SQL `LIMIT`
-  and a keyset cursor (`updated_at desc, id`), because `OFFSET 12000` cost 3.4s. The app renders a
-  `ListView`, not an `ItemsControl`: an ItemsControl realises every card, and ~180 rich cards lock
-  the phone's UI thread until Android kills the app. Do not "simplify" the list back to an
-  ItemsControl, and do not make the footer unreachable - it holds Load more.
+  and a keyset cursor (`updated_at desc, id`), because `OFFSET 12000` cost 3.4s. The app shows
+  **10 cards per page** with Newer/Older paging: an ItemsControl realises every card, and 30 rich
+  cards were enough to block the phone's UI thread past Android's 5s input timeout (a real ANR).
+  A **nested** ScrollViewer (a sessions-only scroller inside a Grid row) would not receive touch on
+  the OPPO at all - text boxes inside it never focused and drags did nothing - so all four panels
+  stay in the one page-level `PanelScroller`. Do not reintroduce a per-tab ScrollViewer or raise the
+  page size without testing on the phone.
 - **Schema changes in `SharedBridgeStore` must be guarded by information_schema checks.** An
   unconditional `alter table ... modify column` runs on every bridge start; on a 13k-row mirror that
   made the first page take 5s. `EnsureIndexAsync`/`ColumnExistsAsync` only change what is missing.

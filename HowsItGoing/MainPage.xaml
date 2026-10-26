@@ -270,14 +270,18 @@
     </Border>
 
     <!-- ======== CONTENT ======== -->
-    <!-- Sessions keeps its own virtualised ListView: an ItemsControl realises every card, and a
-         few hundred rich cards are enough to lock a phone's UI thread. Everything else shares the
-         scrolling column below. -->
-    <Grid x:Name="SessionsHost" Grid.Row="2">
-      <Grid MaxWidth="{StaticResource ContentMaxWidth}"
-            Padding="16,0,16,12"
-            HorizontalAlignment="Stretch"
-            RowDefinitions="Auto,*">
+    <!-- All four panels share ONE page-level ScrollViewer. A nested ScrollViewer for Sessions did
+         not receive touch on the phone; this is the layout that is proven there. -->
+    <ScrollViewer x:Name="PanelScroller"
+                  Grid.Row="2"
+                  HorizontalScrollBarVisibility="Disabled"
+                  HorizontalScrollMode="Disabled"
+                  VerticalScrollBarVisibility="Auto">
+      <StackPanel x:Name="ContentColumn"
+                  Padding="16,0,16,32"
+                  MaxWidth="{StaticResource ContentMaxWidth}"
+                  HorizontalAlignment="Stretch">
+        <StackPanel x:Name="PanelSessions" Spacing="12">
 
         <!-- ════════════════════════════════════════ -->
         <!-- SESSIONS PANEL                           -->
@@ -360,25 +364,9 @@
             </StackPanel>
           </Border>
 
-          <!-- Session list: virtualised, one page at a time. -->
-          <ListView x:Name="SessionsList"
-                    Grid.Row="1"
-                    Background="Transparent"
-                    BorderThickness="0"
-                    HorizontalContentAlignment="Stretch"
-                    IsItemClickEnabled="False"
-                    ItemsSource="{Binding Sessions}"
-                    SelectionMode="None">
-            <ListView.ItemContainerStyle>
-              <Style TargetType="ListViewItem">
-                <Setter Property="Padding" Value="0" />
-                <Setter Property="Margin" Value="0" />
-                <Setter Property="MinHeight" Value="0" />
-                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                <Setter Property="Background" Value="Transparent" />
-              </Style>
-            </ListView.ItemContainerStyle>
-            <ListView.ItemTemplate>
+          <!-- Session list: one page of cards, replaced by the pager. -->
+          <ItemsControl ItemsSource="{Binding Sessions}">
+            <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="contracts:CodexSessionSummaryDto">
                 <Border Margin="0,0,0,10"
                         Padding="14"
@@ -571,37 +559,45 @@
                   </StackPanel>
                 </Border>
               </DataTemplate>
-            </ListView.ItemTemplate>
-            <ListView.Footer>
-              <Button Margin="0,4,0,8"
-                      Padding="16,9"
-                      HorizontalAlignment="Stretch"
-                      Background="{ThemeResource InputBackgroundBrush}"
-                      BorderBrush="{ThemeResource CardBorderBrush}"
-                      BorderThickness="1"
-                      Click="LoadMoreSessions_Click"
-                      CornerRadius="10"
-                      IsEnabled="{Binding HasMoreSessions}">
-                <TextBlock HorizontalAlignment="Center"
-                           FontSize="12"
-                           FontWeight="SemiBold"
-                           Foreground="{ThemeResource AccentBrush}"
-                           Text="{Binding LoadMoreSessionsLabel}" />
-              </Button>
-            </ListView.Footer>
-          </ListView>
-      </Grid>
-    </Grid>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
 
-    <ScrollViewer x:Name="PanelScroller"
-                  Grid.Row="2"
-                  HorizontalScrollBarVisibility="Disabled"
-                  HorizontalScrollMode="Disabled"
-                  VerticalScrollBarVisibility="Auto">
-      <StackPanel x:Name="ContentColumn"
-                  Padding="16,0,16,32"
-                  MaxWidth="{StaticResource ContentMaxWidth}"
-                  HorizontalAlignment="Stretch">
+          <!-- Pager: one page of cards at a time, so the realised card count stays bounded on a
+               phone no matter how far back the user walks. -->
+          <Grid Margin="0,2,0,8" ColumnDefinitions="Auto,*,Auto">
+            <Button Padding="14,8"
+                    Background="Transparent"
+                    BorderBrush="{ThemeResource CardBorderBrush}"
+                    BorderThickness="1"
+                    Click="PreviousSessionsPage_Click"
+                    CornerRadius="10"
+                    IsEnabled="{Binding HasPreviousPage}">
+              <TextBlock FontSize="12"
+                         FontWeight="SemiBold"
+                         Foreground="{ThemeResource AccentBrush}"
+                         Text="Newer" />
+            </Button>
+            <TextBlock Grid.Column="1"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       FontSize="12"
+                       Foreground="{ThemeResource MutedBrush}"
+                       Text="{Binding SessionPageLabel}" />
+            <Button Grid.Column="2"
+                    Padding="14,8"
+                    Background="Transparent"
+                    BorderBrush="{ThemeResource CardBorderBrush}"
+                    BorderThickness="1"
+                    Click="NextSessionsPage_Click"
+                    CornerRadius="10"
+                    IsEnabled="{Binding HasNextPage}">
+              <TextBlock FontSize="12"
+                         FontWeight="SemiBold"
+                         Foreground="{ThemeResource AccentBrush}"
+                         Text="Older" />
+            </Button>
+          </Grid>
+        </StackPanel>
 
         <!-- ════════════════════════════════════════ -->
         <!-- NOTIFICATIONS PANEL                      -->
