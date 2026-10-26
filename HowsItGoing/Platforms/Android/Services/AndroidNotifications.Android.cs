@@ -93,12 +93,13 @@ public static class AndroidNotifications
         var sound = string.IsNullOrWhiteSpace(settings.NotificationSoundUri)
             ? SoundDefault
             : settings.NotificationSoundUri.Trim();
-        var fingerprint = HashCode.Combine(
+
+        var fingerprint = NotificationChannelKey.For(
             sound,
             settings.NotificationVibration,
-            ResolveImportance(settings.NotificationImportance));
+            ResolveImportance(settings.NotificationImportance).ToString());
 
-        return $"{EventChannelPrefix}{fingerprint:x8}";
+        return $"{EventChannelPrefix}{fingerprint}";
     }
 
     public static void EnsureChannels(Context context, AppSettings settings)

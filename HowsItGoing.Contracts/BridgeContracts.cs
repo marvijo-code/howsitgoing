@@ -297,6 +297,24 @@ public static class SessionPaging
     }
 }
 
+/// <summary>
+/// Deterministic channel fingerprint. Android keeps a channel's sound for good, so the id must
+/// change when the sound/vibration/importance changes - and must stay the SAME across process
+/// restarts, otherwise every launch orphans the previous channel and loses any per-channel settings
+/// the user made in Android's own notification screen.
+/// </summary>
+public static class NotificationChannelKey
+{
+    public static string For(string? sound, bool vibration, string? importance)
+    {
+        var normalized = $"{sound?.Trim()}|{vibration}|{importance?.Trim()}";
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(normalized));
+
+        return Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
+    }
+}
+
 public sealed record BridgeNotificationDto(
     string Id,
     BridgeNotificationKind Kind,
