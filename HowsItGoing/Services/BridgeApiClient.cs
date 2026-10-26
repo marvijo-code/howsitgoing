@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using HowsItGoing.Contracts;
@@ -15,6 +16,12 @@ public sealed class BridgeApiClient
 
     private readonly AppSettingsStore _settingsStore;
     private readonly SharedBridgeStore _sharedStore;
+
+    /// <summary>
+    /// One HttpClient per bridge address instead of one per request. Building a client per call
+    /// meant a fresh socket handshake for every endpoint on every 30s refresh.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, HttpClient> Clients = new(StringComparer.Ordinal);
 
     private static readonly TimeSpan ResolvedBaseUrlLifetime = TimeSpan.FromMinutes(5);
 
@@ -36,6 +43,35 @@ public sealed class BridgeApiClient
         bool includeArchived,
         CancellationToken cancellationToken = default)
     {
+        var page = await GetSessionsPageAsync(
+            query,
+            status,
+            source,
+            agent,
+            includeArchived,
+            offset: 0,
+            limit: SessionPaging.MaxPageSize,
+            cancellationToken);
+        return page?.Items ?? [];
+    }
+
+    /// <summary>
+    /// Fetches one page of the feed. The bridge is asked for a page, and the shared MySQL mirror is
+    /// asked for the same page, so the phone never downloads a 13k-row list to show 30 cards.
+    /// </summary>
+    public async Task<SessionPageDto?> GetSessionsPageAsync(
+        string? query,
+        string? status,
+        string? source,
+        string? agent,
+        bool includeArchived,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken = default,
+        string? cursor = null)
+    {
+        var safeOffset = SessionPaging.ClampOffset(offset);
+        var safeLimit = SessionPaging.ClampPageSize(limit);
         var endpoint = BuildEndpoint(
             "/api/sessions",
             new Dictionary<string, string?>
@@ -44,21 +80,36 @@ public sealed class BridgeApiClient
                 ["status"] = status,
                 ["source"] = source,
                 ["agent"] = agent,
-                ["includeArchived"] = includeArchived.ToString().ToLowerInvariant()
+                ["includeArchived"] = includeArchived.ToString().ToLowerInvariant(),
+                ["offset"] = safeOffset.ToString(),
+                ["limit"] = safeLimit.ToString(),
+                ["cursor"] = cursor
             });
 
-        return await ExecuteWithSharedFallbackAsync(
-                   directOperation: async token => await GetDirectAsync<IReadOnlyList<CodexSessionSummaryDto>>(endpoint, token) ?? [],
-                   sharedOperation: token => _sharedStore.GetSessionsAsync(query, status, source, agent, includeArchived, token),
-                   cancellationToken)
-               ;
+        try
+        {
+            return await GetDirectAsync<SessionPageDto>(endpoint, cancellationToken);
+        }
+        catch (Exception ex) when (IsBridgeUnreachable(ex, cancellationToken) && _sharedStore.IsConfigured)
+        {
+            return await _sharedStore.GetSessionsPageAsync(
+                query,
+                status,
+                source,
+                agent,
+                includeArchived,
+                safeOffset,
+                safeLimit,
+                cancellationToken,
+                cursor);
+        }
     }
 
     public async Task<SessionFollowUpResponse?> SendFollowUpAsync(SessionFollowUpRequest request, CancellationToken cancellationToken = default)
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
         var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-        using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
+        var client = GetClient(baseUrl, settings.BridgeAccessToken);
         using var response = await SendWithRetryAsync(
             token => client.PostAsJsonAsync("/api/sessions/follow-up", request, SerializerOptions, token),
             cancellationToken);
@@ -162,7 +213,7 @@ public sealed class BridgeApiClient
         {
             var settings = await _settingsStore.LoadAsync(cancellationToken);
             var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-            using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
+            var client = GetClient(baseUrl, settings.BridgeAccessToken);
             using var response = await SendWithRetryAsync(
                 token => client.PostAsJsonAsync("/api/agent/start-run", request, SerializerOptions, token),
                 cancellationToken);
@@ -229,7 +280,7 @@ public sealed class BridgeApiClient
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
         var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-        using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
+        var client = GetClient(baseUrl, settings.BridgeAccessToken);
         using var response = await SendWithRetryAsync(
             token => client.PostAsJsonAsync(relativeUrl, request, SerializerOptions, token),
             cancellationToken);
@@ -251,7 +302,7 @@ public sealed class BridgeApiClient
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
         var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
-        using var client = CreateClient(baseUrl, accessToken: settings.BridgeAccessToken);
+        var client = GetClient(baseUrl, settings.BridgeAccessToken);
         using var response = await SendWithRetryAsync(
             token => client.GetAsync(relativeUrl, token),
             cancellationToken);
@@ -402,6 +453,21 @@ public sealed class BridgeApiClient
         }
 
         return client;
+    }
+
+    /// <summary>
+    /// Returns a long-lived client for this address/token pair. The token is only used to build a
+    /// cache key; nothing is logged or persisted with it.
+    /// </summary>
+    private static HttpClient GetClient(string baseUrl, string? accessToken)
+    {
+        var normalized = NormalizeBaseUrl(baseUrl);
+        var tokenKey = string.IsNullOrWhiteSpace(accessToken)
+            ? "0"
+            : accessToken.Trim().GetHashCode(StringComparison.Ordinal).ToString("x");
+        var key = $"{normalized}|{tokenKey}";
+
+        return Clients.GetOrAdd(key, _ => CreateClient(normalized, accessToken: accessToken));
     }
 
     private static string BuildEndpoint(string path, IReadOnlyDictionary<string, string?> query)

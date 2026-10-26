@@ -2,7 +2,8 @@ using Android.App;
 using Android.Content;
 using Android.Content.PM;
 using Android.OS;
-using AndroidX.Core.App;
+using HowsItGoing.Contracts;
+using HowsItGoing.Models;
 using HowsItGoing.Services;
 
 namespace HowsItGoing.Droid;
@@ -10,25 +11,27 @@ namespace HowsItGoing.Droid;
 [Service(Exported = false, ForegroundServiceType = ForegroundService.TypeDataSync)]
 public sealed class BridgeMonitorForegroundService : Service
 {
-    private const string MonitorChannelId = "howsitgoing-monitor";
-    private const string EventChannelId = "howsitgoing-events";
-    private const int ForegroundNotificationId = 1001;
+    private const int ForegroundNotificationId = AndroidNotifications.ForegroundNotificationId;
+    private const int MinimumPollSeconds = 10;
+    private const int MaximumPollSeconds = 300;
     private const ForegroundService ServiceType = ForegroundService.TypeDataSync;
+
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _monitoringTask;
+    private AppSettings _appliedSettings = new();
 
     public override IBinder? OnBind(Intent? intent) => null;
 
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
-        EnsureChannels();
+        AndroidNotifications.EnsureChannels(this, _appliedSettings);
         if (Build.VERSION.SdkInt >= BuildVersionCodes.Q)
         {
-            StartForeground(ForegroundNotificationId, BuildForegroundNotification(), ServiceType);
+            StartForeground(ForegroundNotificationId, AndroidNotifications.BuildForegroundNotification(this), ServiceType);
         }
         else
         {
-            StartForeground(ForegroundNotificationId, BuildForegroundNotification());
+            StartForeground(ForegroundNotificationId, AndroidNotifications.BuildForegroundNotification(this));
         }
 
         if (_monitoringTask is null || _monitoringTask.IsCompleted)
@@ -61,6 +64,7 @@ public sealed class BridgeMonitorForegroundService : Service
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            var pollSeconds = 30;
             try
             {
                 var settings = await settingsStore.LoadAsync(cancellationToken);
@@ -68,6 +72,13 @@ public sealed class BridgeMonitorForegroundService : Service
                 {
                     StopSelf();
                     return;
+                }
+
+                pollSeconds = Math.Clamp(settings.NotificationPollSeconds, MinimumPollSeconds, MaximumPollSeconds);
+                if (!HasSameAlertChannels(settings))
+                {
+                    AndroidNotifications.EnsureChannels(this, settings);
+                    _appliedSettings = settings;
                 }
 
                 if (settings.LastSeenNotificationAt is null)
@@ -81,11 +92,15 @@ public sealed class BridgeMonitorForegroundService : Service
                     var notifications = await apiClient.GetNotificationsAsync(settings.LastSeenNotificationAt, 20, cancellationToken);
                     if (notifications.Count > 0)
                     {
-                        foreach (var notification in notifications.OrderBy(x => x.OccurredAt))
+                        foreach (var notification in notifications
+                                     .OrderBy(x => x.OccurredAt)
+                                     .Where(x => ShouldRaise(settings, x)))
                         {
-                            ShowNotification(notification);
+                            AndroidNotifications.Show(this, settings, notification);
                         }
 
+                        // Advance past every fetched row, including the ones filtered out here or
+                        // held back by quiet hours, so they never flood in later.
                         var latestSeen = notifications.Max(x => x.OccurredAt);
                         await settingsStore.SaveAsync(settings with { LastSeenNotificationAt = latestSeen }, cancellationToken);
                     }
@@ -96,47 +111,63 @@ public sealed class BridgeMonitorForegroundService : Service
                 // Keep the service alive; the UI surface will show bridge errors.
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(pollSeconds), cancellationToken);
+            }
+            catch (System.OperationCanceledException)
+            {
+                return;
+            }
         }
     }
 
-    private Notification BuildForegroundNotification() =>
-        new NotificationCompat.Builder(this, MonitorChannelId)
-            .SetContentTitle("How's It Going")
-            .SetContentText("Monitoring Codex completions and GitHub pushes.")
-            .SetSmallIcon(Resource.Mipmap.icon)
-            .SetOngoing(true)
-            .Build();
+    private bool HasSameAlertChannels(AppSettings settings) =>
+        string.Equals(
+            AndroidNotifications.GetEventChannelId(settings),
+            AndroidNotifications.GetEventChannelId(_appliedSettings),
+            StringComparison.Ordinal);
 
-    private void ShowNotification(HowsItGoing.Contracts.BridgeNotificationDto notification)
+    /// <summary>
+    /// The phone-side filter. The bridge filters web push itself, but Android alerts are raised
+    /// from a polled feed, so the per-kind choice and quiet hours must be applied here.
+    /// </summary>
+    private static bool ShouldRaise(AppSettings settings, BridgeNotificationDto notification)
     {
-        var builder = new NotificationCompat.Builder(this, EventChannelId)
-            .SetSmallIcon(Resource.Mipmap.icon)
-            .SetContentTitle(notification.Title)
-            .SetContentText(notification.Message)
-            .SetStyle(new NotificationCompat.BigTextStyle().BigText(notification.Message))
-            .SetAutoCancel(true)
-            .SetPriority((int)NotificationPriority.Default);
+        if (!IsKindEnabled(settings, notification.Kind))
+        {
+            return false;
+        }
 
-        NotificationManagerCompat.From(this).Notify(notification.Id.GetHashCode(StringComparison.Ordinal), builder.Build());
+        return !IsQuietHour(settings, DateTimeOffset.Now);
     }
 
-    private void EnsureChannels()
+    private static bool IsKindEnabled(AppSettings settings, BridgeNotificationKind kind)
     {
-        if (Build.VERSION.SdkInt < BuildVersionCodes.O)
+        if (string.IsNullOrWhiteSpace(settings.NotificationKinds))
         {
-            return;
+            return true;
         }
 
-        var manager = (NotificationManager?)GetSystemService(NotificationService);
-        if (manager is null)
+        var kinds = settings.NotificationKinds.Split(
+            ',',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return kinds.Any(value =>
+            Enum.TryParse<BridgeNotificationKind>(value, ignoreCase: true, out var parsed) && parsed == kind);
+    }
+
+    private static bool IsQuietHour(AppSettings settings, DateTimeOffset now)
+    {
+        var start = settings.NotificationQuietStartHour;
+        var end = settings.NotificationQuietEndHour;
+        if (start is < 0 or > 23 || end is < 0 or > 23 || start == end)
         {
-            return;
+            return false;
         }
 
-        var monitorChannel = new NotificationChannel(MonitorChannelId, "Bridge Monitoring", NotificationImportance.Low);
-        var eventChannel = new NotificationChannel(EventChannelId, "Bridge Events", NotificationImportance.Default);
-        manager.CreateNotificationChannel(monitorChannel);
-        manager.CreateNotificationChannel(eventChannel);
+        var hour = now.Hour;
+        return start < end
+            ? hour >= start && hour < end
+            : hour >= start || hour < end;
     }
 }

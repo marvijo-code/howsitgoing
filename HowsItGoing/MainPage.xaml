@@ -270,19 +270,18 @@
     </Border>
 
     <!-- ======== CONTENT ======== -->
-    <ScrollViewer Grid.Row="2"
-                  HorizontalScrollBarVisibility="Disabled"
-                  HorizontalScrollMode="Disabled"
-                  VerticalScrollBarVisibility="Auto">
-      <StackPanel x:Name="ContentColumn"
-                  Padding="16,0,16,32"
-                  MaxWidth="{StaticResource ContentMaxWidth}"
-                  HorizontalAlignment="Stretch">
+    <!-- Sessions keeps its own virtualised ListView: an ItemsControl realises every card, and a
+         few hundred rich cards are enough to lock a phone's UI thread. Everything else shares the
+         scrolling column below. -->
+    <Grid x:Name="SessionsHost" Grid.Row="2">
+      <Grid MaxWidth="{StaticResource ContentMaxWidth}"
+            Padding="16,0,16,12"
+            HorizontalAlignment="Stretch"
+            RowDefinitions="Auto,*">
 
         <!-- ════════════════════════════════════════ -->
         <!-- SESSIONS PANEL                           -->
         <!-- ════════════════════════════════════════ -->
-        <StackPanel x:Name="PanelSessions" Spacing="12">
 
           <!-- Filter card -->
           <Border Padding="14"
@@ -337,7 +336,7 @@
                         Background="Transparent"
                         BorderBrush="{ThemeResource CardBorderBrush}"
                         BorderThickness="1"
-                        Click="RefreshButton_Click"
+                        Click="ApplyFilters_Click"
                         CornerRadius="8">
                   <TextBlock FontSize="12"
                              FontWeight="SemiBold"
@@ -345,12 +344,41 @@
                              Text="Apply" />
                 </Button>
               </Grid>
+
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock FontSize="11"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource MutedBrush}"
+                           Text="{Binding SessionFeedSummary}"
+                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="NoWrap" />
+                <TextBlock Grid.Column="1"
+                           FontSize="11"
+                           Foreground="{ThemeResource AccentDimBrush}"
+                           Text="{Binding FeedFreshness}" />
+              </Grid>
             </StackPanel>
           </Border>
 
-          <!-- Session list -->
-          <ItemsControl ItemsSource="{Binding Sessions}">
-            <ItemsControl.ItemTemplate>
+          <!-- Session list: virtualised, one page at a time. -->
+          <ListView x:Name="SessionsList"
+                    Grid.Row="1"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    HorizontalContentAlignment="Stretch"
+                    IsItemClickEnabled="False"
+                    ItemsSource="{Binding Sessions}"
+                    SelectionMode="None">
+            <ListView.ItemContainerStyle>
+              <Style TargetType="ListViewItem">
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="Margin" Value="0" />
+                <Setter Property="MinHeight" Value="0" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Background" Value="Transparent" />
+              </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.ItemTemplate>
               <DataTemplate x:DataType="contracts:CodexSessionSummaryDto">
                 <Border Margin="0,0,0,10"
                         Padding="14"
@@ -543,10 +571,44 @@
                   </StackPanel>
                 </Border>
               </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
+            </ListView.ItemTemplate>
+            <ListView.Footer>
+              <Button Margin="0,4,0,8"
+                      Padding="16,9"
+                      HorizontalAlignment="Stretch"
+                      Background="{ThemeResource InputBackgroundBrush}"
+                      BorderBrush="{ThemeResource CardBorderBrush}"
+                      BorderThickness="1"
+                      Click="LoadMoreSessions_Click"
+                      CornerRadius="10"
+                      IsEnabled="{Binding HasMoreSessions}">
+                <TextBlock HorizontalAlignment="Center"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource AccentBrush}"
+                           Text="{Binding LoadMoreSessionsLabel}" />
+              </Button>
+            </ListView.Footer>
+          </ListView>
+      </Grid>
+    </Grid>
 
-          <!-- Bridge settings card -->
+    <ScrollViewer x:Name="PanelScroller"
+                  Grid.Row="2"
+                  HorizontalScrollBarVisibility="Disabled"
+                  HorizontalScrollMode="Disabled"
+                  VerticalScrollBarVisibility="Auto">
+      <StackPanel x:Name="ContentColumn"
+                  Padding="16,0,16,32"
+                  MaxWidth="{StaticResource ContentMaxWidth}"
+                  HorizontalAlignment="Stretch">
+
+        <!-- ════════════════════════════════════════ -->
+        <!-- NOTIFICATIONS PANEL                      -->
+        <!-- ════════════════════════════════════════ -->
+        <StackPanel x:Name="PanelNotifications" Spacing="12" Visibility="Collapsed">
+
+          <!-- Connection settings live here now that Sessions is a full-height list. -->
           <Border Padding="14"
                   Background="{ThemeResource CardBackgroundBrush}"
                   BorderBrush="{ThemeResource CardBorderBrush}"
@@ -587,12 +649,6 @@
                          TextWrapping="Wrap" />
             </StackPanel>
           </Border>
-        </StackPanel>
-
-        <!-- ════════════════════════════════════════ -->
-        <!-- NOTIFICATIONS PANEL                      -->
-        <!-- ════════════════════════════════════════ -->
-        <StackPanel x:Name="PanelNotifications" Spacing="12" Visibility="Collapsed">
 
           <Border Padding="14"
                   Background="{ThemeResource CardBackgroundBrush}"
@@ -625,6 +681,146 @@
                            Foreground="{ThemeResource AccentBrush}"
                            Text="Open Latest Release" />
               </Button>
+            </StackPanel>
+          </Border>
+
+          <!-- Android alerts: sound, vibration and cadence. Hidden off Android. -->
+          <Border Padding="14"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="14"
+                  Visibility="{Binding SystemNotificationsSupported, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel Spacing="10">
+              <TextBlock FontSize="15"
+                         FontWeight="SemiBold"
+                         Foreground="{ThemeResource HeadingBrush}"
+                         Text="System notifications" />
+              <TextBlock FontSize="12"
+                         Foreground="{ThemeResource MutedBrush}"
+                         Text="{Binding NotificationSettingsStatus}"
+                         TextWrapping="Wrap" />
+
+              <StackPanel Spacing="4">
+                <TextBlock FontSize="11"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource MutedBrush}"
+                           Text="SOUND"
+                           CharacterSpacing="60" />
+                <ComboBox HorizontalAlignment="Stretch"
+                          BorderThickness="0"
+                          CornerRadius="8"
+                          DisplayMemberPath="Label"
+                          ItemsSource="{Binding NotificationSounds}"
+                          SelectedItem="{Binding SelectedNotificationSound, Mode=TwoWay}" />
+              </StackPanel>
+
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock FontSize="13"
+                             Foreground="{ThemeResource BodyBrush}"
+                             Text="Vibrate" />
+                  <TextBlock FontSize="11"
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="Short double pulse per alert" />
+                </StackPanel>
+                <ToggleSwitch Grid.Column="1"
+                              IsOn="{Binding NotificationVibration, Mode=TwoWay}"
+                              OffContent=""
+                              OnContent="" />
+              </Grid>
+
+              <Grid ColumnDefinitions="*,8,*">
+                <StackPanel Spacing="4">
+                  <TextBlock FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="IMPORTANCE"
+                             CharacterSpacing="60" />
+                  <ComboBox HorizontalAlignment="Stretch"
+                            BorderThickness="0"
+                            CornerRadius="8"
+                            ItemsSource="{Binding NotificationImportances}"
+                            SelectedItem="{Binding NotificationImportance, Mode=TwoWay}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4">
+                  <TextBlock FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="CHECK EVERY (S)"
+                             CharacterSpacing="60" />
+                  <ComboBox HorizontalAlignment="Stretch"
+                            BorderThickness="0"
+                            CornerRadius="8"
+                            ItemsSource="{Binding NotificationPollOptions}"
+                            SelectedItem="{Binding NotificationPollSeconds, Mode=TwoWay}" />
+                </StackPanel>
+              </Grid>
+
+              <Grid ColumnDefinitions="*,8,*">
+                <StackPanel Spacing="4">
+                  <TextBlock FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="QUIET FROM (HOUR)"
+                             CharacterSpacing="60" />
+                  <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                           BorderThickness="0"
+                           CornerRadius="8"
+                           PlaceholderText="off"
+                           Text="{Binding NotificationQuietHoursStart, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4">
+                  <TextBlock FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="QUIET UNTIL (HOUR)"
+                             CharacterSpacing="60" />
+                  <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                           BorderThickness="0"
+                           CornerRadius="8"
+                           PlaceholderText="off"
+                           Text="{Binding NotificationQuietHoursEnd, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+              </Grid>
+
+              <TextBlock FontSize="11"
+                         FontWeight="SemiBold"
+                         Foreground="{ThemeResource MutedBrush}"
+                         Text="ALERT TYPES"
+                         CharacterSpacing="60" />
+              <StackPanel Spacing="2">
+                <CheckBox Content="Thread completed" IsChecked="{Binding AndroidOnCodexCompleted, Mode=TwoWay}" />
+                <CheckBox Content="GitHub push" IsChecked="{Binding AndroidOnGitHubPush, Mode=TwoWay}" />
+                <CheckBox Content="Thread started" IsChecked="{Binding AndroidOnAgentStarted, Mode=TwoWay}" />
+                <CheckBox Content="Run failed" IsChecked="{Binding AndroidOnAgentFailed, Mode=TwoWay}" />
+                <CheckBox Content="Follow-up completed" IsChecked="{Binding AndroidOnFollowUpCompleted, Mode=TwoWay}" />
+                <CheckBox Content="Follow-up failed" IsChecked="{Binding AndroidOnFollowUpFailed, Mode=TwoWay}" />
+              </StackPanel>
+
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Padding="16,8"
+                        Background="{ThemeResource AccentBrush}"
+                        BorderThickness="0"
+                        Click="SaveNotificationSettings_Click"
+                        CornerRadius="8">
+                  <TextBlock FontSize="12"
+                             FontWeight="SemiBold"
+                             Foreground="White"
+                             Text="Save alerts" />
+                </Button>
+                <Button Padding="16,8"
+                        Background="Transparent"
+                        BorderBrush="{ThemeResource CardBorderBrush}"
+                        BorderThickness="1"
+                        Click="SendTestNotification_Click"
+                        CornerRadius="8">
+                  <TextBlock FontSize="12"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource AccentBrush}"
+                             Text="Test alert" />
+                </Button>
+              </StackPanel>
             </StackPanel>
           </Border>
 

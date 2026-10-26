@@ -11,6 +11,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly BridgeApiClient _bridgeApiClient;
     private readonly AppSettingsStore _settingsStore;
+    private readonly FeedCacheStore _feedCache;
     private string _bridgeBaseUrl = "http://127.0.0.1:5217";
     private string _searchQuery = string.Empty;
     private string _selectedStatus = "All";
@@ -36,6 +37,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _notificationWarning = string.Empty;
     private string _themePreference = "Dark";
     private int _refreshInFlight;
+    private int _sessionTotalCount;
+    private string? _sessionCursor;
+    private bool _isLoadingMoreSessions;
+    private DateTimeOffset _lastIssuesRefreshAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastAuxiliaryRefreshAt = DateTimeOffset.MinValue;
     private bool _pushSupported;
     private bool _pushSubscribed;
     private string _pushStatus = "Checking push support…";
@@ -53,19 +59,41 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string? _pushEndpoint;
     private string? _vapidPublicKey;
 
+    // ---- Android system notifications -----------------------------------------------------------
+    private string _notificationSoundKey = NotificationSoundCatalog.DefaultKey;
+    private bool _notificationVibration = true;
+    private string _notificationImportance = "Default";
+    private string _notificationPollSeconds = "30";
+    private string _notificationQuietStart = string.Empty;
+    private string _notificationQuietEnd = string.Empty;
+    private string _notificationSettingsStatus = string.Empty;
+    private bool _androidOnCodexCompleted = true;
+    private bool _androidOnGitHubPush = true;
+    private bool _androidOnAgentStarted = true;
+    private bool _androidOnAgentFailed = true;
+    private bool _androidOnFollowUpCompleted = true;
+    private bool _androidOnFollowUpFailed = true;
+
     /// <summary>Upper bound for one refresh pass, so the in-flight guard always clears.</summary>
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    /// Cards in the Sessions list are realised eagerly, so this is a rendering budget rather than a
-    /// data limit. The feed answers "what is happening now", which the newest slice already covers.
+    /// Cards in the Sessions list are paginated for a reason: an ItemsControl realises every card,
+    /// and 180 rich cards once locked the phone's UI thread long enough for Android to kill the app.
     /// </summary>
-    private const int MaxRenderedSessions = 25;
+    private const int SessionPageSize = SessionPaging.DefaultPageSize;
 
-    public MainViewModel(BridgeApiClient bridgeApiClient, AppSettingsStore settingsStore)
+    /// <summary>
+    /// Ceiling on what one refresh re-reads. A user who has paged deep gets their loaded window
+    /// refreshed, but the 30s tick never becomes a 13k-row download.
+    /// </summary>
+    private const int MaxSessionsRefreshed = 120;
+
+    public MainViewModel(BridgeApiClient bridgeApiClient, AppSettingsStore settingsStore, FeedCacheStore feedCache)
     {
         _bridgeApiClient = bridgeApiClient;
         _settingsStore = settingsStore;
+        _feedCache = feedCache;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -83,6 +111,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ObservableCollection<string> AgentFilters { get; } = ["All", "Codex", "Claude Code", "OpenCode"];
 
     public ObservableCollection<string> IssueStateFilters { get; } = ["All", "Open", "Closed"];
+
+    public ObservableCollection<NotificationSoundOption> NotificationSounds { get; } = [];
+
+    private NotificationSoundOption? _selectedNotificationSound;
+
+    /// <summary>
+    /// The picker binds SelectedItem: Uno does not reliably re-resolve a SelectedValue/Key pair
+    /// when the item list is filled after the binding is evaluated, which left the box blank.
+    /// </summary>
+    public NotificationSoundOption? SelectedNotificationSound
+    {
+        get => _selectedNotificationSound;
+        set
+        {
+            if (SetProperty(ref _selectedNotificationSound, value) && value is not null)
+            {
+                NotificationSoundKey = value.Key;
+            }
+        }
+    }
+
+    public ObservableCollection<string> NotificationImportances { get; } = ["High", "Default", "Low"];
+
+    public ObservableCollection<string> NotificationPollOptions { get; } = ["10", "15", "30", "60", "120", "300"];
 
     public string BridgeBaseUrl
     {
@@ -103,7 +155,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _selectedStatus, value))
             {
-                _ = RefreshAsync();
+                _ = RefreshAsync(resetPaging: true);
             }
         }
     }
@@ -115,7 +167,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _selectedAgent, value))
             {
-                _ = RefreshAsync();
+                _ = RefreshAsync(resetPaging: true);
             }
         }
     }
@@ -151,7 +203,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _includeArchived, value))
             {
-                _ = RefreshAsync();
+                _ = RefreshAsync(resetPaging: true);
             }
         }
     }
@@ -261,6 +313,55 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         FeedFreshness = Contracts.FeedFreshness.Describe(DateTimeOffset.UtcNow - refreshedAt);
     }
+
+    /// <summary>Rows matching the current filters, not just the rows loaded so far.</summary>
+    public int SessionTotalCount
+    {
+        get => _sessionTotalCount;
+        private set
+        {
+            if (SetProperty(ref _sessionTotalCount, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMoreSessions)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionFeedSummary)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoadMoreSessionsLabel)));
+            }
+        }
+    }
+
+    public bool IsLoadingMoreSessions
+    {
+        get => _isLoadingMoreSessions;
+        private set
+        {
+            if (SetProperty(ref _isLoadingMoreSessions, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoadMoreSessionsLabel)));
+            }
+        }
+    }
+
+    public bool HasMoreSessions => Sessions.Count < SessionTotalCount;
+
+    public string SessionFeedSummary => SessionTotalCount > Sessions.Count
+        ? $"{Sessions.Count:N0} of {SessionTotalCount:N0} sessions"
+        : $"{SessionTotalCount:N0} sessions";
+
+    public string LoadMoreSessionsLabel => IsLoadingMoreSessions
+        ? "Loading\u2026"
+        : HasMoreSessions
+            ? $"Load more ({Sessions.Count:N0} of {SessionTotalCount:N0})"
+            : "All sessions loaded";
+
+    /// <summary>True while the Issues tab is the one on screen; the GitHub board only refreshes then.</summary>
+    public bool IssuesTabActive { get; set; }
+
+    /// <summary>
+    /// Set by the page while the user is reading further down the feed. A 30s tick must not yank
+    /// the list back to the newest card under their thumb; the next tick after they return to the
+    /// top (or an explicit Refresh) publishes again.
+    /// </summary>
+    public bool PauseSessionUpdates { get; set; }
 
     public string RepositorySummary
     {
@@ -384,6 +485,100 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set => SetProperty(ref _pushQuietHoursEnd, value);
     }
 
+    // ---- Android system notifications -----------------------------------------------------------
+
+    /// <summary>True only on the Android head; the settings card hides everywhere else.</summary>
+    public bool SystemNotificationsSupported
+    {
+        get
+        {
+#if ANDROID
+            return true;
+#else
+            return false;
+#endif
+        }
+    }
+
+    public string NotificationSoundKey
+    {
+        get => _notificationSoundKey;
+        set => SetProperty(ref _notificationSoundKey, value);
+    }
+
+    public bool NotificationVibration
+    {
+        get => _notificationVibration;
+        set => SetProperty(ref _notificationVibration, value);
+    }
+
+    public string NotificationImportance
+    {
+        get => _notificationImportance;
+        set => SetProperty(ref _notificationImportance, value);
+    }
+
+    public string NotificationPollSeconds
+    {
+        get => _notificationPollSeconds;
+        set => SetProperty(ref _notificationPollSeconds, value);
+    }
+
+    /// <summary>Local hour (0-23) quiet hours start, or blank to disable.</summary>
+    public string NotificationQuietHoursStart
+    {
+        get => _notificationQuietStart;
+        set => SetProperty(ref _notificationQuietStart, value);
+    }
+
+    public string NotificationQuietHoursEnd
+    {
+        get => _notificationQuietEnd;
+        set => SetProperty(ref _notificationQuietEnd, value);
+    }
+
+    public string NotificationSettingsStatus
+    {
+        get => _notificationSettingsStatus;
+        private set => SetProperty(ref _notificationSettingsStatus, value);
+    }
+
+    public bool AndroidOnCodexCompleted
+    {
+        get => _androidOnCodexCompleted;
+        set => SetProperty(ref _androidOnCodexCompleted, value);
+    }
+
+    public bool AndroidOnGitHubPush
+    {
+        get => _androidOnGitHubPush;
+        set => SetProperty(ref _androidOnGitHubPush, value);
+    }
+
+    public bool AndroidOnAgentStarted
+    {
+        get => _androidOnAgentStarted;
+        set => SetProperty(ref _androidOnAgentStarted, value);
+    }
+
+    public bool AndroidOnAgentFailed
+    {
+        get => _androidOnAgentFailed;
+        set => SetProperty(ref _androidOnAgentFailed, value);
+    }
+
+    public bool AndroidOnFollowUpCompleted
+    {
+        get => _androidOnFollowUpCompleted;
+        set => SetProperty(ref _androidOnFollowUpCompleted, value);
+    }
+
+    public bool AndroidOnFollowUpFailed
+    {
+        get => _androidOnFollowUpFailed;
+        set => SetProperty(ref _androidOnFollowUpFailed, value);
+    }
+
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         try
@@ -397,6 +592,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
             AgentReasoningEffort = settings.AgentReasoningEffort;
             IssueRepositories = settings.IssueRepositories;
             ThemePreference = settings.ThemePreference;
+            ApplyNotificationSettings(settings);
+
+            // Seed the picker with the two always-present choices; device tones are enumerated
+            // later, off the UI thread, the first time the Alerts tab opens.
+            if (NotificationSounds.Count == 0)
+            {
+                foreach (var option in NotificationSoundCatalog.FixedOptions())
+                {
+                    NotificationSounds.Add(option);
+                }
+            }
+
+            SelectNotificationSound();
+
+            // Paint the last known feed immediately, then replace it with a live one. On a phone
+            // this is the difference between a blank "Loading…" and a usable list in under a second.
+            ApplyCachedFeed(await _feedCache.LoadAsync(cancellationToken));
+
             await RefreshAsync(cancellationToken);
         }
         catch (Exception ex)
@@ -408,7 +621,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public async Task SaveSettingsAsync(CancellationToken cancellationToken = default)
     {
         var existing = await _settingsStore.LoadAsync(cancellationToken);
-        await _settingsStore.SaveAsync(new AppSettings
+        var updated = new AppSettings
         {
             BridgeBaseUrl = BridgeBaseUrl.Trim(),
             MonitoringEnabled = MonitoringEnabled,
@@ -419,9 +632,177 @@ public sealed class MainViewModel : INotifyPropertyChanged
             IssueRepositories = IssueRepositories.Trim(),
             ThemePreference = ThemePreference,
             LastSeenNotificationAt = existing.LastSeenNotificationAt
-        }, cancellationToken);
+        };
+        await _settingsStore.SaveAsync(WithNotificationSettings(updated), cancellationToken);
 
         StatusBanner = "Settings saved.";
+    }
+
+    /// <summary>
+    /// Saves the Android alert card and restarts monitoring so the new sound, vibration or poll
+    /// interval takes effect immediately instead of at the next reboot.
+    /// </summary>
+    public async Task SaveNotificationSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        var existing = await _settingsStore.LoadAsync(cancellationToken);
+        var updated = WithNotificationSettings(existing with { MonitoringEnabled = MonitoringEnabled });
+        await _settingsStore.SaveAsync(updated, cancellationToken);
+
+        var result = await MonitoringServiceCoordinator.SyncAsync(updated.MonitoringEnabled);
+        ApplyMonitoringSyncResult(result);
+
+        NotificationSettingsStatus = result.WarningMessage is { Length: > 0 }
+            ? result.WarningMessage
+            : "Alert settings saved. The next alert uses them.";
+    }
+
+    /// <summary>
+    /// Fills the sound picker with the device's notification tones the first time the Alerts tab is
+    /// shown. The media-provider query is slow enough to trip an ANR if it runs on the UI thread, so
+    /// the fixed choices are already there and the device list arrives when it arrives.
+    /// </summary>
+    public async Task EnsureNotificationSoundsAsync(CancellationToken cancellationToken = default)
+    {
+        if (NotificationSounds.Count > NotificationSoundCatalog.FixedOptions().Count)
+        {
+            return;
+        }
+
+        try
+        {
+            var options = await Task.Run(NotificationSoundCatalog.Load, cancellationToken);
+            foreach (var option in options)
+            {
+                if (!NotificationSounds.Any(existing => existing.Key == option.Key))
+                {
+                    NotificationSounds.Add(option);
+                }
+            }
+
+            SelectNotificationSound();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            NotificationSettingsStatus = $"Could not read device notification tones: {ex.Message}";
+        }
+    }
+
+    private void SelectNotificationSound()
+    {
+        SelectedNotificationSound = NotificationSounds.FirstOrDefault(option =>
+                string.Equals(option.Key, NotificationSoundKey, StringComparison.Ordinal))
+            ?? NotificationSounds.FirstOrDefault();
+    }
+
+    /// <summary>Fires one notification through the exact channel the real alerts use.</summary>
+    public void SendTestNotification()
+    {
+#if ANDROID
+        try
+        {
+            var settings = WithNotificationSettings(new AppSettings { MonitoringEnabled = MonitoringEnabled });
+            HowsItGoing.Droid.AndroidNotifications.ShowTest(Android.App.Application.Context, settings);
+            NotificationSettingsStatus = "Test alert sent. Check the notification shade.";
+        }
+        catch (Exception ex)
+        {
+            NotificationSettingsStatus = $"Test alert failed: {ex.Message}";
+        }
+#else
+        NotificationSettingsStatus = "System notifications are Android only.";
+#endif
+    }
+
+    private void ApplyNotificationSettings(AppSettings settings)
+    {
+        NotificationSoundKey = string.IsNullOrWhiteSpace(settings.NotificationSoundUri)
+            ? NotificationSoundCatalog.DefaultKey
+            : settings.NotificationSoundUri;
+        NotificationVibration = settings.NotificationVibration;
+        NotificationImportance = string.IsNullOrWhiteSpace(settings.NotificationImportance)
+            ? "Default"
+            : settings.NotificationImportance;
+        NotificationPollSeconds = Math.Clamp(settings.NotificationPollSeconds, 10, 300).ToString();
+
+        var kinds = string.IsNullOrWhiteSpace(settings.NotificationKinds)
+            ? null
+            : settings.NotificationKinds
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(value => Enum.TryParse<BridgeNotificationKind>(value, ignoreCase: true, out var parsed) ? parsed : (BridgeNotificationKind?)null)
+                .Where(kind => kind is not null)
+                .Select(kind => kind!.Value)
+                .ToHashSet();
+
+        AndroidOnCodexCompleted = kinds is null || kinds.Contains(BridgeNotificationKind.CodexThreadCompleted);
+        AndroidOnGitHubPush = kinds is null || kinds.Contains(BridgeNotificationKind.GitHubPush);
+        AndroidOnAgentStarted = kinds is null || kinds.Contains(BridgeNotificationKind.AgentThreadStarted);
+        AndroidOnAgentFailed = kinds is null || kinds.Contains(BridgeNotificationKind.AgentRunFailed);
+        AndroidOnFollowUpCompleted = kinds is null || kinds.Contains(BridgeNotificationKind.FollowUpCompleted);
+        AndroidOnFollowUpFailed = kinds is null || kinds.Contains(BridgeNotificationKind.FollowUpFailed);
+
+        NotificationQuietHoursStart = settings.NotificationQuietStartHour >= 0
+            ? settings.NotificationQuietStartHour.ToString()
+            : string.Empty;
+        NotificationQuietHoursEnd = settings.NotificationQuietEndHour >= 0
+            ? settings.NotificationQuietEndHour.ToString()
+            : string.Empty;
+    }
+
+    private AppSettings WithNotificationSettings(AppSettings settings)
+    {
+        var kinds = SelectedNotificationKinds();
+        return settings with
+        {
+            NotificationSoundUri = NotificationSoundKey,
+            NotificationVibration = NotificationVibration,
+            NotificationImportance = NotificationImportances.Contains(NotificationImportance)
+                ? NotificationImportance
+                : "Default",
+            NotificationPollSeconds = ParseBoundedInt(NotificationPollSeconds, 30, 10, 300),
+            NotificationKinds = kinds.Count == 6
+                ? string.Empty
+                : kinds.Count == 0
+                    ? "none"
+                    : string.Join(",", kinds.Select(kind => kind.ToString())),
+            NotificationQuietStartHour = ParseHour(NotificationQuietHoursStart) ?? -1,
+            NotificationQuietEndHour = ParseHour(NotificationQuietHoursEnd) ?? -1
+        };
+    }
+
+    private List<BridgeNotificationKind> SelectedNotificationKinds()
+    {
+        var kinds = new List<BridgeNotificationKind>(6);
+        if (AndroidOnCodexCompleted)
+        {
+            kinds.Add(BridgeNotificationKind.CodexThreadCompleted);
+        }
+
+        if (AndroidOnGitHubPush)
+        {
+            kinds.Add(BridgeNotificationKind.GitHubPush);
+        }
+
+        if (AndroidOnAgentStarted)
+        {
+            kinds.Add(BridgeNotificationKind.AgentThreadStarted);
+        }
+
+        if (AndroidOnAgentFailed)
+        {
+            kinds.Add(BridgeNotificationKind.AgentRunFailed);
+        }
+
+        if (AndroidOnFollowUpCompleted)
+        {
+            kinds.Add(BridgeNotificationKind.FollowUpCompleted);
+        }
+
+        if (AndroidOnFollowUpFailed)
+        {
+            kinds.Add(BridgeNotificationKind.FollowUpFailed);
+        }
+
+        return kinds;
     }
 
     public async Task SaveThemePreferenceAsync(string preference, CancellationToken cancellationToken = default)
@@ -733,7 +1114,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private static int? ParseHour(string value) =>
         int.TryParse(value, out var parsed) && parsed is >= 0 and <= 23 ? parsed : null;
 
-    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    /// <param name="resetPaging">
+    /// A filter change or an explicit Refresh starts from the newest page. The 30s tick passes
+    /// false, so a user who has paged back keeps their place.
+    /// </param>
+    public async Task RefreshAsync(CancellationToken cancellationToken = default, bool resetPaging = false)
     {
         if (Interlocked.Exchange(ref _refreshInFlight, 1) == 1)
         {
@@ -751,31 +1136,47 @@ public sealed class MainViewModel : INotifyPropertyChanged
             IsRefreshing = true;
             StatusBanner = "Refreshing\u2026";
 
+            if (resetPaging)
+            {
+                Sessions.Clear();
+                SessionTotalCount = 0;
+                _sessionCursor = null;
+                _lastRefreshedAt = null;
+            }
+
             // Core data drives the banner, so it is awaited first and on its own. The
             // auxiliary calls below are GitHub-backed and can take tens of seconds.
-            var sessions = await _bridgeApiClient.GetSessionsAsync(
+            var requestedLimit = SessionPaging.ClampPageSize(
+                Math.Max(SessionPageSize, Math.Min(Sessions.Count, MaxSessionsRefreshed)));
+            var page = await _bridgeApiClient.GetSessionsPageAsync(
                 SearchQuery,
                 SelectedStatus == "All" ? null : SelectedStatus,
                 source: null,
                 SelectedAgent == "All" ? null : AgentKinds.Normalize(SelectedAgent),
                 IncludeArchived,
+                offset: 0,
+                limit: requestedLimit,
                 token);
 
-            // The Sessions panel is an ItemsControl, so every card is realised at once. 180 rich cards
-            // with borders, badges and an expander lock the phone's UI thread for minutes (taps then
-            // hit the 5s input timeout and the system kills the app). Render the newest slice only.
-            var visibleSessions = sessions.Count > MaxRenderedSessions
-                ? sessions.Take(MaxRenderedSessions).ToArray()
-                : sessions;
+            if (page is null)
+            {
+                throw new InvalidOperationException("The bridge returned no session page.");
+            }
 
-            SynchronizeCollection(Sessions, visibleSessions, session => $"{session.Agent}:{session.Id}");
+            // While the user is scrolled into older cards, publish the count but leave the rows
+            // alone: replacing them resets the list under their thumb every 30 seconds.
+            if (resetPaging || !PauseSessionUpdates)
+            {
+                SynchronizeCollection(Sessions, page.Items, session => $"{session.Agent}:{session.Id}");
+                _sessionCursor = page.NextCursor;
+            }
+
+            SessionTotalCount = page.TotalCount;
 
             // Publish what the user came for as soon as the sessions land. Notifications are a large
             // payload and the auxiliary GitHub calls are slower still, so waiting for them left the
             // header on "Refreshing…" for over a minute on a phone.
-            StatusBanner = visibleSessions.Count == sessions.Count
-                ? $"{visibleSessions.Count} sessions"
-                : $"{visibleSessions.Count} of {sessions.Count} sessions";
+            StatusBanner = SessionFeedSummary;
             _lastRefreshedAt = DateTimeOffset.UtcNow;
             UpdateFeedFreshness();
 
@@ -788,7 +1189,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             UpdateFeedFreshness();
             // "alerts" rather than "notifications" to match the tab of the same name, and because
             // the shorter word keeps this on one line next to the freshness readout on a phone.
-            StatusBanner = $"{Sessions.Count} sessions \u00B7 {Notifications.Count} alerts";
+            StatusBanner = $"{SessionFeedSummary} \u00B7 {Notifications.Count} alerts";
+
+            await SaveFeedCacheAsync(page, notifications, token);
 
             // Re-read the base URL in case the BridgeApiClient auto-resolved a different one.
             var latestSettings = await _settingsStore.LoadAsync(token);
@@ -810,37 +1213,153 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
+    /// Appends the next page. Called by the list when it nears the bottom and by the Load more
+    /// button, so the feed can be walked back through all 13k mirrored sessions a page at a time.
+    /// </summary>
+    public async Task LoadMoreSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsLoadingMoreSessions || !HasMoreSessions)
+        {
+            return;
+        }
+
+        IsLoadingMoreSessions = true;
+        try
+        {
+            var offset = Sessions.Count;
+            var page = await _bridgeApiClient.GetSessionsPageAsync(
+                SearchQuery,
+                SelectedStatus == "All" ? null : SelectedStatus,
+                source: null,
+                SelectedAgent == "All" ? null : AgentKinds.Normalize(SelectedAgent),
+                IncludeArchived,
+                offset,
+                SessionPageSize,
+                cancellationToken,
+                cursor: _sessionCursor);
+
+            if (page is null)
+            {
+                StatusBanner = "Could not load more sessions - the bridge is unreachable.";
+                return;
+            }
+
+            var known = Sessions
+                .Select(session => $"{session.Agent}:{session.Id}")
+                .ToHashSet(StringComparer.Ordinal);
+            var added = 0;
+            foreach (var session in page.Items)
+            {
+                if (known.Add($"{session.Agent}:{session.Id}"))
+                {
+                    Sessions.Add(session);
+                    added++;
+                }
+            }
+
+            // A page can overlap the loaded rows when the feed shifts under us; take the server's
+            // count so "x of y" stays honest either way.
+            SessionTotalCount = page.TotalCount;
+            _sessionCursor = page.NextCursor;
+            StatusBanner = added > 0
+                ? $"{SessionFeedSummary} \u00B7 {Notifications.Count} alerts"
+                : SessionTotalCount <= Sessions.Count
+                    ? $"{SessionFeedSummary} \u00B7 {Notifications.Count} alerts"
+                    : $"No new sessions on this page. Try Refresh.";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            StatusBanner = FormatRequestFailure("Loading more sessions failed", ex);
+        }
+        finally
+        {
+            IsLoadingMoreSessions = false;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMoreSessions)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionFeedSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LoadMoreSessionsLabel)));
+        }
+    }
+
+    private void ApplyCachedFeed(FeedSnapshot? snapshot)
+    {
+        if (snapshot?.Sessions is not { Items.Count: > 0 } page)
+        {
+            return;
+        }
+
+        SynchronizeCollection(Sessions, page.Items, session => $"{session.Agent}:{session.Id}");
+        SessionTotalCount = page.TotalCount;
+        SynchronizeCollection(Notifications, snapshot.Notifications, notification => notification.Id);
+
+        _lastRefreshedAt = snapshot.SavedAt;
+        UpdateFeedFreshness();
+        StatusBanner = $"Cached {SessionFeedSummary} \u00B7 refreshing\u2026";
+    }
+
+    private async Task SaveFeedCacheAsync(
+        SessionPageDto page,
+        IReadOnlyList<BridgeNotificationDto> notifications,
+        CancellationToken cancellationToken)
+    {
+        // Cache the first page only; deeper pages are re-fetchable and the point is a fast launch.
+        var firstPage = page.Offset == 0
+            ? page
+            : new SessionPageDto(
+                page.Items.Take(SessionPageSize).ToArray(),
+                page.TotalCount,
+                0,
+                SessionPageSize);
+
+        await _feedCache.SaveAsync(
+            new FeedSnapshot(DateTimeOffset.UtcNow, firstPage, notifications.ToArray()),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Secondary panels (repo status, update check, issue board). Each is isolated so one slow
     /// or failing GitHub call cannot blank the others or the already-published session list.
+    /// These are GitHub-backed and change slowly, so they are throttled instead of riding every
+    /// 30s tick: repository/update at most every 5 minutes, and the issue board only while its tab
+    /// is open (plus one warm-up load so the first visit is instant).
     /// </summary>
     private async Task RefreshAuxiliaryAsync(CancellationToken cancellationToken)
     {
-        try
+        var now = DateTimeOffset.UtcNow;
+        if (_lastAuxiliaryRefreshAt == DateTimeOffset.MinValue ||
+            now - _lastAuxiliaryRefreshAt >= TimeSpan.FromMinutes(5))
         {
-            var repositoryStatus = await _bridgeApiClient.GetRepositoryStatusAsync(cancellationToken);
-            RepositorySummary = repositoryStatus is null
-                ? "Bridge is reachable, but repository status is unavailable."
-                : FormatRepositorySummary(repositoryStatus);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            RepositorySummary = "Repository status is unavailable.";
+            _lastAuxiliaryRefreshAt = now;
+
+            try
+            {
+                var repositoryStatus = await _bridgeApiClient.GetRepositoryStatusAsync(cancellationToken);
+                RepositorySummary = repositoryStatus is null
+                    ? "Bridge is reachable, but repository status is unavailable."
+                    : FormatRepositorySummary(repositoryStatus);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                RepositorySummary = "Repository status is unavailable.";
+            }
+
+            try
+            {
+                var updateInfo = await _bridgeApiClient.GetUpdateInfoAsync(null, null, cancellationToken);
+                UpdateSummary = updateInfo is null
+                    ? "No published release found yet."
+                    : FormatUpdateSummary(updateInfo);
+                ReleaseUrl = updateInfo?.AssetDownloadUrl;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                UpdateSummary = "Update check is unavailable.";
+            }
         }
 
-        try
+        if (IssuesTabActive || _lastIssuesRefreshAt == DateTimeOffset.MinValue)
         {
-            var updateInfo = await _bridgeApiClient.GetUpdateInfoAsync(null, null, cancellationToken);
-            UpdateSummary = updateInfo is null
-                ? "No published release found yet."
-                : FormatUpdateSummary(updateInfo);
-            ReleaseUrl = updateInfo?.AssetDownloadUrl;
+            await RefreshIssuesAsync(cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            UpdateSummary = "Update check is unavailable.";
-        }
-
-        await RefreshIssuesAsync(cancellationToken);
     }
 
     /// <summary>
@@ -870,6 +1389,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         catch (Exception ex)
         {
             IssueBoardSummary = FormatRequestFailure("Issues failed", ex);
+        }
+        finally
+        {
+            _lastIssuesRefreshAt = DateTimeOffset.UtcNow;
         }
     }
 

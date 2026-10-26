@@ -31,9 +31,40 @@ dotnet test HowsItGoing.Tests; dotnet test HowsItGoing.Bridge.Tests
 
 ## Rules / gotchas
 
+- **The session feed is paged, and the list must stay virtualised.** `/api/sessions?offset=&limit=&cursor=`
+  returns `SessionPageDto` (items + total + next cursor); the shared MySQL mirror uses SQL `LIMIT`
+  and a keyset cursor (`updated_at desc, id`), because `OFFSET 12000` cost 3.4s. The app renders a
+  `ListView`, not an `ItemsControl`: an ItemsControl realises every card, and ~180 rich cards lock
+  the phone's UI thread until Android kills the app. Do not "simplify" the list back to an
+  ItemsControl, and do not make the footer unreachable - it holds Load more.
+- **Schema changes in `SharedBridgeStore` must be guarded by information_schema checks.** An
+  unconditional `alter table ... modify column` runs on every bridge start; on a 13k-row mirror that
+  made the first page take 5s. `EnsureIndexAsync`/`ColumnExistsAsync` only change what is missing.
+- **Android alert settings fingerprint the notification channel id** (`AndroidNotifications.
+  GetEventChannelId`). A channel's sound is immutable after creation, so changing the sound must
+  create a new channel and retire the old `howsitgoing-events-*` ones - editing the existing channel
+  silently does nothing.
 - **Nothing renders without a running bridge.** Check `/healthz` first. A hung bridge can keep
   holding port 5217 while answering nothing - find the owner with
   `Get-NetTCPConnection -LocalPort 5217 -State Listen` and kill it.
+- **The refresh timer must stay wall-clock driven, never one tick per interval.** `MainPage` ticks
+  every 5s and each tick asks whether 30s has elapsed. A 30s-interval timer looks perfect in a
+  foreground tab, but mobile browsers throttle background timers to ~1/min and freeze them on
+  tab-hide/screen-lock, so the web head came back stale after every phone unlock.
+  `WebLifecycleCoordinator` (`howsitgoing-lifecycle.js`, a polled resume counter) additionally
+  refreshes on `visibilitychange`/`focus`/`pageshow`/`online`. **Testing this needs the page
+  actually backgrounded** - redefine `document.visibilityState`/`hidden` and dispatch
+  `visibilitychange`; a plain headless tab will green-light the bug.
+- **Phone layout lives in the `AdaptiveTrigger` states on `RootLayout` (640px breakpoint).** Narrow
+  halves the gutters, collapses the Refresh label to its glyph, and caps `StatusCounts.MaxWidth`.
+  Do NOT "fix" `HorizontalAlignment="Stretch"` + `MaxWidth` to `Center` - Stretch already centres
+  once MaxWidth binds, whereas Center shrink-wraps to content and stops filling a phone screen.
+  Header text needs `TextWrapping="NoWrap"`; `TextTrimming` alone still wraps and grows the header.
+- **Browser-only code goes behind `#if __WASM__`** (`WebPushCoordinator`, `WebLifecycleCoordinator`)
+  with `#pragma warning disable CA1416` - Uno reports its platform as "BrowserWasm", not "browser",
+  so every `[JSImport]` call is flagged unreachable. Static web files belong in
+  `Platforms/WebAssembly/wwwroot/`; a project-level `wwwroot/` is not deployed. VAPID keys stay in
+  the gitignored `appsettings.Local.json` - never commit key material.
 - **Never let a slow call into the guarded refresh loop unguarded.** `MainViewModel.RefreshAsync`
   publishes sessions + notifications FIRST, then runs GitHub-backed work in `RefreshAuxiliaryAsync`,
   all under a 60s timeout. Awaiting a slow call before publishing re-creates the original bug: the

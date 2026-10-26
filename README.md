@@ -4,12 +4,21 @@
 
 ## What It Does
 
-- Lists Codex sessions from the local Codex state database and rollout JSONL files
+- Lists Codex, Claude Code, and OpenCode sessions in a paged, virtualised feed (30 per page, keyset
+  cursors, exact match count) so a 13k-row shared mirror stays fast
 - Filters sessions by text, status, source, and archived state
-- Raises Android device notifications when Codex threads complete
+- Raises Android device notifications for agent and GitHub events, with configurable sound,
+  vibration, importance, poll cadence, alert types and quiet hours
 - Monitors the repo's GitHub push events through the local bridge
-- Starts new `codex exec` runs in any repo path you send from the app
+- Starts new `codex exec` / `opencode run` sessions in any repo path you send from the app
 - Checks GitHub releases for newer APKs and can hand the latest APK to the Android package installer
+
+## Fast start
+
+The feed paints the last successful refresh from a local snapshot (`feed-cache.json`) before the
+first network call, then replaces it with live data. `/api/sessions` answers in ~60ms warm; the
+bridge caches the merged local feed for 4 seconds, reuses one `HttpClient` per bridge address, and
+the phone asks for one page at a time.
 
 ## Projects
 

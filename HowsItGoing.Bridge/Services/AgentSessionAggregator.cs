@@ -14,6 +14,18 @@ public sealed class AgentSessionAggregator
     private readonly int _maxSessionsPerAgent;
     private readonly ILogger<AgentSessionAggregator> _logger;
 
+    /// <summary>
+    /// Reading three agent stores off disk on every call is what made tab switching and paging feel
+    /// slow. Four seconds is short enough that a finished run still appears promptly and long enough
+    /// that a page tap, a refresh and the shared-store sync collapse onto one read.
+    /// </summary>
+    private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(4);
+
+    private readonly SemaphoreSlim _cacheGate = new(1, 1);
+    private string? _cacheKey;
+    private DateTimeOffset _cacheAt;
+    private IReadOnlyList<CodexSessionSummaryDto>? _cachedSessions;
+
     public AgentSessionAggregator(
         CodexSessionService codexSessions,
         ClaudeCodeSessionService claudeSessions,
@@ -29,6 +41,74 @@ public sealed class AgentSessionAggregator
     }
 
     public async Task<IReadOnlyList<CodexSessionSummaryDto>> GetSessionsAsync(
+        string? query,
+        CodexSessionStatus? status,
+        string? source,
+        string? agent,
+        bool includeArchived,
+        CancellationToken cancellationToken)
+    {
+        var cacheKey = string.Join(
+            '\u001f',
+            query?.Trim() ?? string.Empty,
+            status?.ToString() ?? string.Empty,
+            source?.Trim() ?? string.Empty,
+            agent?.Trim() ?? string.Empty,
+            includeArchived ? "1" : "0");
+
+        if (_cachedSessions is { } cached &&
+            string.Equals(_cacheKey, cacheKey, StringComparison.Ordinal) &&
+            DateTimeOffset.UtcNow - _cacheAt < CacheLifetime)
+        {
+            return cached;
+        }
+
+        // Serialise the read: a refresh, a page tap and the mirror sync can all arrive together,
+        // and without this each one re-reads three agent stores.
+        await _cacheGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_cachedSessions is { } fresh &&
+                string.Equals(_cacheKey, cacheKey, StringComparison.Ordinal) &&
+                DateTimeOffset.UtcNow - _cacheAt < CacheLifetime)
+            {
+                return fresh;
+            }
+
+            var sessions = await LoadSessionsAsync(query, status, source, agent, includeArchived, cancellationToken);
+            _cachedSessions = sessions;
+            _cacheKey = cacheKey;
+            _cacheAt = DateTimeOffset.UtcNow;
+            return sessions;
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// A page of the merged local feed. The local stores are capped per agent, so this slices in
+    /// memory; the shared MySQL mirror uses its own SQL-side paging.
+    /// </summary>
+    public async Task<SessionPageDto> GetSessionsPageAsync(
+        string? query,
+        CodexSessionStatus? status,
+        string? source,
+        string? agent,
+        bool includeArchived,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken,
+        string? cursor = null)
+    {
+        // The local feed is a few hundred rows at most, so a slice is cheaper than tracking a
+        // cursor. The shared MySQL mirror is the path that needs keyset paging.
+        var sessions = await GetSessionsAsync(query, status, source, agent, includeArchived, cancellationToken);
+        return SessionPaging.Slice(sessions, offset, limit);
+    }
+
+    private async Task<IReadOnlyList<CodexSessionSummaryDto>> LoadSessionsAsync(
         string? query,
         CodexSessionStatus? status,
         string? source,

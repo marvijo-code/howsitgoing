@@ -31,9 +31,65 @@ public sealed class SharedBridgeStore
         bool includeArchived,
         CancellationToken cancellationToken)
     {
+        // Compatibility shim: the feed is paged now, and an unpaged call is what used to drag
+        // 13k rows across the wire. Keep the hard ceiling so no caller can reintroduce that.
+        var page = await GetSessionsPageAsync(
+            query,
+            status,
+            source,
+            agent,
+            includeArchived,
+            offset: 0,
+            limit: SessionPaging.MaxPageSize,
+            cancellationToken);
+
+        return page.Items;
+    }
+
+    /// <summary>
+    /// One page of the mirrored feed. The count and the rows travel in a single command (two result
+    /// sets) because to Azure MySQL each extra round trip is worth tens of milliseconds, and the
+    /// message body is truncated in SQL so a page of 30 cards does not carry megabytes.
+    /// </summary>
+    public Task<SessionPageDto> GetSessionsPageAsync(
+        string? query,
+        string? status,
+        string? source,
+        string? agent,
+        bool includeArchived,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken,
+        string? cursor = null)
+    {
+        var safeOffset = SessionPaging.ClampOffset(offset);
+        var safeLimit = SessionPaging.ClampPageSize(limit);
+        return QuerySessionsPageAsync(
+            query,
+            status,
+            source,
+            agent,
+            includeArchived,
+            safeOffset,
+            safeLimit,
+            cursor,
+            cancellationToken);
+    }
+
+    private async Task<SessionPageDto> QuerySessionsPageAsync(
+        string? query,
+        string? status,
+        string? source,
+        string? agent,
+        bool includeArchived,
+        int offset,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken)
+    {
         if (!IsConfigured)
         {
-            return [];
+            return new SessionPageDto([], 0, offset, limit);
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -70,8 +126,30 @@ public sealed class SharedBridgeStore
                 """);
         }
 
+        // Keyset paging: walk forward from the last row instead of asking MySQL to count past
+        // 12,000 skipped rows. The order is updated_at desc, id, so the next row is strictly
+        // older, or the same timestamp with a larger id.
+        var hasCursor = SessionPaging.TryParseCursor(cursor, out var cursorUpdatedAt, out var cursorId);
+        var whereClause = string.Join(Environment.NewLine + "  and ", predicates);
+        var pageWhereClause = whereClause;
+        if (hasCursor)
+        {
+            // The count must cover every matching row, not just the rows after the cursor,
+            // otherwise "x of y" collapses to the remainder and paging stops early.
+            pageWhereClause += Environment.NewLine
+                + "  and (updated_at < @cursorUpdatedAt or (updated_at = @cursorUpdatedAt and id > @cursorId))";
+        }
+
+        var pagingClause = hasCursor
+            ? "limit @limit"
+            : "limit @limit offset @offset";
+
         await using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
+            select count(*)
+            from howsitgoing_sessions
+            where {whereClause};
+
             select
                 id,
                 title,
@@ -85,15 +163,14 @@ public sealed class SharedBridgeStore
                 updated_at,
                 archived,
                 status,
-                last_agent_message,
+                left(last_agent_message, 500),
                 completed_at,
                 agent
             from howsitgoing_sessions
-            where
-            """
-            + string.Join(Environment.NewLine + "  and ", predicates)
-            + Environment.NewLine
-            + "order by updated_at desc";
+            where {pageWhereClause}
+            order by updated_at desc, id
+            {pagingClause};
+            """;
         command.Parameters.AddWithValue("@includeArchived", includeArchived ? 1 : 0);
         if (!string.IsNullOrWhiteSpace(source))
         {
@@ -115,31 +192,55 @@ public sealed class SharedBridgeStore
             command.Parameters.AddWithValue("@queryPattern", $"%{query.Trim().ToLowerInvariant()}%");
         }
 
-        var results = new List<CodexSessionSummaryDto>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        command.Parameters.AddWithValue("@limit", limit);
+        if (!hasCursor)
         {
-            results.Add(new CodexSessionSummaryDto(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5),
-                reader.IsDBNull(6) ? null : reader.GetString(6),
-                reader.IsDBNull(7) ? null : reader.GetString(7),
-                ReadDateTimeOffset(reader, 8),
-                ReadDateTimeOffset(reader, 9),
-                reader.GetBoolean(10),
-                Enum.TryParse<CodexSessionStatus>(reader.GetString(11), ignoreCase: true, out var sessionStatus)
-                    ? sessionStatus
-                    : CodexSessionStatus.Idle,
-                reader.IsDBNull(12) ? null : reader.GetString(12),
-                reader.IsDBNull(13) ? null : ReadDateTimeOffset(reader, 13),
-                reader.IsDBNull(14) ? AgentKinds.Codex : reader.GetString(14)));
+            command.Parameters.AddWithValue("@offset", offset);
+        }
+        else
+        {
+            command.Parameters.AddWithValue("@cursorUpdatedAt", cursorUpdatedAt.UtcDateTime);
+            command.Parameters.AddWithValue("@cursorId", cursorId);
         }
 
-        return results;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var totalCount = 0;
+        if (await reader.ReadAsync(cancellationToken))
+        {
+            totalCount = Convert.ToInt32(reader.GetValue(0));
+        }
+
+        var results = new List<CodexSessionSummaryDto>(limit);
+        if (await reader.NextResultAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                results.Add(new CodexSessionSummaryDto(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.IsDBNull(7) ? null : reader.GetString(7),
+                    ReadDateTimeOffset(reader, 8),
+                    ReadDateTimeOffset(reader, 9),
+                    reader.GetBoolean(10),
+                    Enum.TryParse<CodexSessionStatus>(reader.GetString(11), ignoreCase: true, out var sessionStatus)
+                        ? sessionStatus
+                        : CodexSessionStatus.Idle,
+                    reader.IsDBNull(12) ? null : reader.GetString(12),
+                    reader.IsDBNull(13) ? null : ReadDateTimeOffset(reader, 13),
+                    reader.IsDBNull(14) ? AgentKinds.Codex : reader.GetString(14)));
+            }
+        }
+
+        var nextCursor = results.Count > 0 && offset + results.Count < totalCount
+            ? SessionPaging.CreateCursor(results[^1].UpdatedAt, results[^1].Id)
+            : null;
+
+        return new SessionPageDto(results, totalCount, offset, limit, nextCursor);
     }
 
     public async Task<IReadOnlyList<BridgeNotificationDto>> GetNotificationsAsync(
@@ -201,45 +302,35 @@ public sealed class SharedBridgeStore
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        foreach (var session in sessions)
+
+        // One statement per 40 rows instead of one per row: a 180-session sync used to be 180
+        // round trips to Azure MySQL every 20 seconds.
+        foreach (var batch in sessions.Chunk(40))
         {
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            var values = new List<string>(batch.Length);
+            for (var i = 0; i < batch.Length; i++)
+            {
+                values.Add($$"""
+                    (@id{{i}}, @title{{i}}, @source{{i}}, @working_directory{{i}}, @git_branch{{i}},
+                     @git_origin_url{{i}}, @agent_nickname{{i}}, @agent_role{{i}}, @created_at{{i}},
+                     @updated_at{{i}}, @archived{{i}}, @status{{i}}, @last_agent_message{{i}},
+                     @completed_at{{i}}, @agent{{i}}, utc_timestamp(6))
+                    """);
+                AddSessionParameters(command, batch[i], i.ToString());
+            }
+
             command.CommandText = """
                 insert into howsitgoing_sessions (
-                    id,
-                    title,
-                    source,
-                    working_directory,
-                    git_branch,
-                    git_origin_url,
-                    agent_nickname,
-                    agent_role,
-                    created_at,
-                    updated_at,
-                    archived,
-                    status,
-                    last_agent_message,
-                    completed_at,
-                    agent,
-                    synced_at)
-                values (
-                    @id,
-                    @title,
-                    @source,
-                    @working_directory,
-                    @git_branch,
-                    @git_origin_url,
-                    @agent_nickname,
-                    @agent_role,
-                    @created_at,
-                    @updated_at,
-                    @archived,
-                    @status,
-                    @last_agent_message,
-                    @completed_at,
-                    @agent,
-                    utc_timestamp(6))
+                    id, title, source, working_directory, git_branch, git_origin_url,
+                    agent_nickname, agent_role, created_at, updated_at, archived, status,
+                    last_agent_message, completed_at, agent, synced_at)
+                values
+                """
+                + string.Join("," + Environment.NewLine, values)
+                + """
+
                 on duplicate key update
                     title = values(title),
                     source = values(source),
@@ -257,7 +348,6 @@ public sealed class SharedBridgeStore
                     agent = values(agent),
                     synced_at = values(synced_at);
                 """;
-            AddSessionParameters(command, session);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -273,31 +363,30 @@ public sealed class SharedBridgeStore
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        foreach (var notification in notifications)
+        foreach (var batch in notifications.Chunk(50))
         {
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            var rows = new List<string>(batch.Length);
+            for (var i = 0; i < batch.Length; i++)
+            {
+                rows.Add($$"""
+                    (@id{{i}}, @kind{{i}}, @title{{i}}, @message{{i}}, @occurred_at{{i}},
+                     @related_session_id{{i}}, @related_repository{{i}}, @related_url{{i}},
+                     utc_timestamp(6))
+                    """);
+                AddNotificationParameters(command, batch[i], i.ToString());
+            }
+
             command.CommandText = """
                 insert into howsitgoing_notifications (
-                    id,
-                    kind,
-                    title,
-                    message,
-                    occurred_at,
-                    related_session_id,
-                    related_repository,
-                    related_url,
-                    synced_at)
-                values (
-                    @id,
-                    @kind,
-                    @title,
-                    @message,
-                    @occurred_at,
-                    @related_session_id,
-                    @related_repository,
-                    @related_url,
-                    utc_timestamp(6))
+                    id, kind, title, message, occurred_at,
+                    related_session_id, related_repository, related_url, synced_at)
+                values
+                """
+                + string.Join("," + Environment.NewLine, rows)
+                + """
+
                 on duplicate key update
                     kind = values(kind),
                     title = values(title),
@@ -308,7 +397,6 @@ public sealed class SharedBridgeStore
                     related_url = values(related_url),
                     synced_at = values(synced_at);
                 """;
-            AddNotificationParameters(command, notification);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -608,7 +696,10 @@ public sealed class SharedBridgeStore
                     index idx_howsitgoing_sessions_updated (updated_at),
                     index idx_howsitgoing_sessions_source (source),
                     index idx_howsitgoing_sessions_status (status),
-                    index idx_howsitgoing_sessions_agent (agent)
+                    index idx_howsitgoing_sessions_agent (agent),
+                    index idx_howsitgoing_sessions_archived_updated (archived, updated_at),
+                    index idx_howsitgoing_sessions_agent_archived_updated (agent, archived, updated_at),
+                    index idx_howsitgoing_sessions_status_archived_updated (status, archived, updated_at)
                 ) character set utf8mb4 collate utf8mb4_unicode_ci;
 
                 create table if not exists howsitgoing_notifications (
@@ -645,23 +736,62 @@ public sealed class SharedBridgeStore
                     index idx_howsitgoing_agent_commands_processor (processor_id, status, claimed_at)
                 ) character set utf8mb4 collate utf8mb4_unicode_ci;
 
-                alter table howsitgoing_sessions modify column source varchar(512) not null;
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
 
-            // MySQL has no "add column if not exists"; ignore the duplicate-column error on existing tables.
-            await using (var addAgentColumn = connection.CreateCommand())
+            // Only touch the schema when something is actually missing. The old code ran
+            // `alter table ... modify column source` on every process start, which made the first
+            // page wait seconds while MySQL rebuilt a 13k-row table for a no-op.
+            var indexNames = await GetIndexNamesAsync(connection, "howsitgoing_sessions", cancellationToken);
+            if (!await ColumnExistsAsync(connection, "howsitgoing_sessions", "agent", cancellationToken))
             {
-                addAgentColumn.CommandText =
-                    "alter table howsitgoing_sessions add column agent varchar(32) not null default 'codex';";
-                try
-                {
-                    await addAgentColumn.ExecuteNonQueryAsync(cancellationToken);
-                }
-                catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.DuplicateFieldName)
-                {
-                }
+                await TrySchemaChangeAsync(
+                    connection,
+                    "alter table howsitgoing_sessions add column agent varchar(32) not null default 'codex';",
+                    cancellationToken);
             }
+
+            if (await GetCharacterMaximumLengthAsync(connection, "howsitgoing_sessions", "source", cancellationToken) is { } sourceLength &&
+                sourceLength < 512)
+            {
+                await TrySchemaChangeAsync(
+                    connection,
+                    "alter table howsitgoing_sessions modify column source varchar(512) not null;",
+                    cancellationToken);
+            }
+
+            // Composite indexes keyed on the feed's real access pattern: newest first, optionally
+            // narrowed by agent or status. Without them a page sort-files the whole mirror.
+            await EnsureIndexAsync(
+                connection,
+                "howsitgoing_sessions",
+                "idx_howsitgoing_sessions_archived_updated",
+                "alter table howsitgoing_sessions add index idx_howsitgoing_sessions_archived_updated (archived, updated_at, id);",
+                indexNames,
+                cancellationToken);
+            await EnsureIndexAsync(
+                connection,
+                "howsitgoing_sessions",
+                "idx_howsitgoing_sessions_agent_archived_updated",
+                "alter table howsitgoing_sessions add index idx_howsitgoing_sessions_agent_archived_updated (agent, archived, updated_at, id);",
+                indexNames,
+                cancellationToken);
+            await EnsureIndexAsync(
+                connection,
+                "howsitgoing_sessions",
+                "idx_howsitgoing_sessions_status_archived_updated",
+                "alter table howsitgoing_sessions add index idx_howsitgoing_sessions_status_archived_updated (status, archived, updated_at, id);",
+                indexNames,
+                cancellationToken);
+
+            var notificationIndexes = await GetIndexNamesAsync(connection, "howsitgoing_notifications", cancellationToken);
+            await EnsureIndexAsync(
+                connection,
+                "howsitgoing_notifications",
+                "idx_howsitgoing_notifications_occurred_kind",
+                "alter table howsitgoing_notifications add index idx_howsitgoing_notifications_occurred_kind (occurred_at, kind);",
+                notificationIndexes,
+                cancellationToken);
 
             _schemaEnsured = true;
         }
@@ -671,37 +801,129 @@ public sealed class SharedBridgeStore
         }
     }
 
-    private static void AddSessionParameters(MySqlCommand command, CodexSessionSummaryDto session)
+    private static async Task EnsureIndexAsync(
+        MySqlConnection connection,
+        string table,
+        string indexName,
+        string createStatement,
+        HashSet<string> existingIndexes,
+        CancellationToken cancellationToken)
     {
-        command.Parameters.AddWithValue("@id", session.Id);
-        command.Parameters.AddWithValue("@title", session.Title);
-        command.Parameters.AddWithValue("@source", session.Source);
-        command.Parameters.AddWithValue("@working_directory", session.WorkingDirectory);
-        command.Parameters.AddWithValue("@git_branch", (object?)session.GitBranch ?? DBNull.Value);
-        command.Parameters.AddWithValue("@git_origin_url", (object?)session.GitOriginUrl ?? DBNull.Value);
-        command.Parameters.AddWithValue("@agent_nickname", (object?)session.AgentNickname ?? DBNull.Value);
-        command.Parameters.AddWithValue("@agent_role", (object?)session.AgentRole ?? DBNull.Value);
-        command.Parameters.AddWithValue("@created_at", session.CreatedAt.UtcDateTime);
-        command.Parameters.AddWithValue("@updated_at", session.UpdatedAt.UtcDateTime);
-        command.Parameters.AddWithValue("@archived", session.Archived ? 1 : 0);
-        command.Parameters.AddWithValue("@status", session.Status.ToString());
-        command.Parameters.AddWithValue("@last_agent_message", (object?)session.LastAgentMessage ?? DBNull.Value);
-        command.Parameters.AddWithValue("@completed_at", session.CompletedAt is { } completedAt
-            ? completedAt.UtcDateTime
-            : DBNull.Value);
-        command.Parameters.AddWithValue("@agent", string.IsNullOrWhiteSpace(session.Agent) ? AgentKinds.Codex : session.Agent);
+        if (existingIndexes.Contains(indexName))
+        {
+            return;
+        }
+
+        await TrySchemaChangeAsync(connection, createStatement, cancellationToken);
+        existingIndexes.Add(indexName);
     }
 
-    private static void AddNotificationParameters(MySqlCommand command, BridgeNotificationDto notification)
+    private static async Task<HashSet<string>> GetIndexNamesAsync(
+        MySqlConnection connection,
+        string table,
+        CancellationToken cancellationToken)
     {
-        command.Parameters.AddWithValue("@id", notification.Id);
-        command.Parameters.AddWithValue("@kind", notification.Kind.ToString());
-        command.Parameters.AddWithValue("@title", notification.Title);
-        command.Parameters.AddWithValue("@message", notification.Message);
-        command.Parameters.AddWithValue("@occurred_at", notification.OccurredAt.UtcDateTime);
-        command.Parameters.AddWithValue("@related_session_id", (object?)notification.RelatedSessionId ?? DBNull.Value);
-        command.Parameters.AddWithValue("@related_repository", (object?)notification.RelatedRepository ?? DBNull.Value);
-        command.Parameters.AddWithValue("@related_url", (object?)notification.RelatedUrl ?? DBNull.Value);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select index_name
+            from information_schema.statistics
+            where table_schema = database() and table_name = @table;
+            """;
+        command.Parameters.AddWithValue("@table", table);
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        MySqlConnection connection,
+        string table,
+        string column,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select count(*)
+            from information_schema.columns
+            where table_schema = database() and table_name = @table and column_name = @column;
+            """;
+        command.Parameters.AddWithValue("@table", table);
+        command.Parameters.AddWithValue("@column", column);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
+    }
+
+    private static async Task<int?> GetCharacterMaximumLengthAsync(
+        MySqlConnection connection,
+        string table,
+        string column,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select character_maximum_length
+            from information_schema.columns
+            where table_schema = database() and table_name = @table and column_name = @column;
+            """;
+        command.Parameters.AddWithValue("@table", table);
+        command.Parameters.AddWithValue("@column", column);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is null or DBNull ? null : Convert.ToInt32(value);
+    }
+
+    private static async Task TrySchemaChangeAsync(
+        MySqlConnection connection,
+        string statement,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = statement;
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (MySqlException ex) when (
+            ex.ErrorCode is MySqlErrorCode.DuplicateFieldName or MySqlErrorCode.DuplicateKeyName)
+        {
+        }
+    }
+
+    private static void AddSessionParameters(MySqlCommand command, CodexSessionSummaryDto session, string suffix = "")
+    {
+        command.Parameters.AddWithValue($"@id{suffix}", session.Id);
+        command.Parameters.AddWithValue($"@title{suffix}", session.Title);
+        command.Parameters.AddWithValue($"@source{suffix}", session.Source);
+        command.Parameters.AddWithValue($"@working_directory{suffix}", session.WorkingDirectory);
+        command.Parameters.AddWithValue($"@git_branch{suffix}", (object?)session.GitBranch ?? DBNull.Value);
+        command.Parameters.AddWithValue($"@git_origin_url{suffix}", (object?)session.GitOriginUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue($"@agent_nickname{suffix}", (object?)session.AgentNickname ?? DBNull.Value);
+        command.Parameters.AddWithValue($"@agent_role{suffix}", (object?)session.AgentRole ?? DBNull.Value);
+        command.Parameters.AddWithValue($"@created_at{suffix}", session.CreatedAt.UtcDateTime);
+        command.Parameters.AddWithValue($"@updated_at{suffix}", session.UpdatedAt.UtcDateTime);
+        command.Parameters.AddWithValue($"@archived{suffix}", session.Archived ? 1 : 0);
+        command.Parameters.AddWithValue($"@status{suffix}", session.Status.ToString());
+        command.Parameters.AddWithValue($"@last_agent_message{suffix}", (object?)session.LastAgentMessage ?? DBNull.Value);
+        command.Parameters.AddWithValue($"@completed_at{suffix}", session.CompletedAt is { } completedAt
+            ? completedAt.UtcDateTime
+            : DBNull.Value);
+        command.Parameters.AddWithValue($"@agent{suffix}", string.IsNullOrWhiteSpace(session.Agent) ? AgentKinds.Codex : session.Agent);
+    }
+
+    private static void AddNotificationParameters(MySqlCommand command, BridgeNotificationDto notification, string suffix = "")
+    {
+        command.Parameters.AddWithValue($"@id{suffix}", notification.Id);
+        command.Parameters.AddWithValue($"@kind{suffix}", notification.Kind.ToString());
+        command.Parameters.AddWithValue($"@title{suffix}", notification.Title);
+        command.Parameters.AddWithValue($"@message{suffix}", notification.Message);
+        command.Parameters.AddWithValue($"@occurred_at{suffix}", notification.OccurredAt.UtcDateTime);
+        command.Parameters.AddWithValue($"@related_session_id{suffix}", (object?)notification.RelatedSessionId ?? DBNull.Value);
+        command.Parameters.AddWithValue($"@related_repository{suffix}", (object?)notification.RelatedRepository ?? DBNull.Value);
+        command.Parameters.AddWithValue($"@related_url{suffix}", (object?)notification.RelatedUrl ?? DBNull.Value);
     }
 
     private static DateTimeOffset ReadDateTimeOffset(MySqlDataReader reader, int ordinal)
