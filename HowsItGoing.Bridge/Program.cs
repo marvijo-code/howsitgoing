@@ -44,6 +44,7 @@ builder.Services.AddSingleton<CodexSessionService>();
 builder.Services.AddSingleton<ClaudeCodeSessionService>();
 builder.Services.AddSingleton<OpenCodeSessionService>();
 builder.Services.AddSingleton<AgentSessionAggregator>();
+builder.Services.AddSingleton<SessionThreadService>();
 builder.Services.AddSingleton<GitHubRepositoryService>();
 builder.Services.AddSingleton<GitHubIssueService>();
 builder.Services.AddSingleton<AgentLaunchService>();
@@ -112,6 +113,33 @@ app.MapGet("/api/sessions", async (
         cancellationToken,
         cursor);
     return Results.Ok(page);
+});
+
+// The feed only carries the last agent message. This returns one readable window of the whole
+// transcript so the app can show the thread itself; it reads the stores on demand, never on a tick.
+app.MapGet("/api/sessions/thread", async (
+    string? agent,
+    string? sessionId,
+    int? limit,
+    int? before,
+    SessionThreadService threads,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(sessionId))
+    {
+        return Results.BadRequest("sessionId is required.");
+    }
+
+    var thread = await threads.GetThreadAsync(
+        agent ?? AgentKinds.Codex,
+        sessionId,
+        limit ?? SessionThreadPaging.DefaultPageSize,
+        before,
+        cancellationToken);
+
+    return thread is null
+        ? Results.NotFound("That session transcript is not available on this machine.")
+        : Results.Ok(thread);
 });
 
 app.MapPost("/api/sessions/follow-up", async (

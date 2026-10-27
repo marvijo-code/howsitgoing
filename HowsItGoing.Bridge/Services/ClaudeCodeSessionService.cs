@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using HowsItGoing.Contracts;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -13,6 +14,14 @@ public sealed class ClaudeCodeSessionService
 {
     private const int HeadLinesToScan = 40;
     private const int TailBytesToScan = 192 * 1024;
+
+    /// <summary>
+    /// Claude Code prepends tool-injected context to some user turns. It belongs in the transcript
+    /// but not in the card title, where it swallowed the whole 80-character summary.
+    /// </summary>
+    private static readonly Regex InjectedContextBlock = new(
+        @"<(system-reminder|environment_context|user_instructions)>.*?</\1>",
+        RegexOptions.Singleline | RegexOptions.Compiled);
 
     private readonly string _projectsRoot;
     private readonly int _runningThresholdSeconds;
@@ -155,6 +164,15 @@ public sealed class ClaudeCodeSessionService
         }
 
         var lastAssistantMessage = await ReadLastAssistantMessageAsync(transcript, cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(firstUserText))
+        {
+            firstUserText = InjectedContextBlock.Replace(firstUserText, string.Empty).Trim();
+            if (firstUserText.Length == 0)
+            {
+                firstUserText = null;
+            }
+        }
 
         title ??= Truncate(firstUserText, 80) ?? sessionId;
         var session = new CodexSessionSummaryDto(

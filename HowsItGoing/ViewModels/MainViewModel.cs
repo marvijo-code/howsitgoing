@@ -141,7 +141,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string SearchQuery
     {
         get => _searchQuery;
-        set => SetProperty(ref _searchQuery, value);
+        set
+        {
+            if (SetProperty(ref _searchQuery, value))
+            {
+                NotifySessionFilterChanged();
+            }
+        }
     }
 
     public string SelectedStatus
@@ -151,6 +157,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _selectedStatus, value))
             {
+                // Archived rows are filtered out of the bridge query unless archived is included, so
+                // the Archive pill would otherwise always come back empty.
+                if (string.Equals(value, "Archived", StringComparison.OrdinalIgnoreCase) && !IncludeArchived)
+                {
+                    _includeArchived = true;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IncludeArchived)));
+                }
+
+                NotifySessionFilterChanged();
                 _ = RefreshAsync(resetPaging: true);
             }
         }
@@ -163,6 +178,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _selectedAgent, value))
             {
+                NotifySessionFilterChanged();
                 _ = RefreshAsync(resetPaging: true);
             }
         }
@@ -199,6 +215,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _includeArchived, value))
             {
+                NotifySessionFilterChanged();
                 _ = RefreshAsync(resetPaging: true);
             }
         }
@@ -295,7 +312,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsRefreshing
     {
         get => _isRefreshing;
-        private set => SetProperty(ref _isRefreshing, value);
+        private set
+        {
+            if (SetProperty(ref _isRefreshing, value))
+            {
+                NotifySessionListStateChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The feed is genuinely empty only after a load finished and returned nothing. A cold start
+    /// (no cached rows, first fetch still running) is a loading state, not "no sessions match".
+    /// </summary>
+    public bool ShowSessionsEmptyState =>
+        Sessions.Count == 0 && !IsRefreshing && _lastRefreshedAt is not null;
+
+    public bool ShowSessionsLoadingState => Sessions.Count == 0 && IsRefreshing;
+
+    private void NotifySessionListStateChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowSessionsEmptyState)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowSessionsLoadingState)));
     }
 
     /// <summary>Recomputes <see cref="FeedFreshness"/> from the clock. Cheap; call it on every tick.</summary>
@@ -344,6 +382,263 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public string SessionFeedSummary => $"{SessionTotalCount:N0} sessions";
+
+    /// <summary>
+    /// One line for the collapsed filter bar, so the current narrowing is visible without opening
+    /// the panel. Empty filters read "All sessions" rather than an empty row.
+    /// </summary>
+    public string SessionFilterSummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(SearchQuery))
+            {
+                parts.Add($"\u201C{SearchQuery.Trim()}\u201D");
+            }
+
+            if (SelectedStatus != "All")
+            {
+                parts.Add(SelectedStatus);
+            }
+
+            if (SelectedAgent != "All")
+            {
+                parts.Add(SelectedAgent);
+            }
+
+            if (IncludeArchived)
+            {
+                parts.Add("archived");
+            }
+
+            return parts.Count == 0 ? "All sessions" : string.Join(" \u00B7 ", parts);
+        }
+    }
+
+    /// <summary>Count of non-default filters, shown as a badge on the filter button.</summary>
+    public int ActiveFilterCount =>
+        (string.IsNullOrWhiteSpace(SearchQuery) ? 0 : 1) +
+        (SelectedStatus == "All" ? 0 : 1) +
+        (SelectedAgent == "All" ? 0 : 1) +
+        (IncludeArchived ? 1 : 0);
+
+    // ---- Thread viewer ------------------------------------------------------------------------
+    // The feed carries only the last agent message. The viewer asks the bridge for one window of the
+    // transcript at a time and prepends older windows on demand, so a 25 MB rollout never reaches
+    // the phone in one payload.
+
+    private const int ThreadPageSize = 40;
+
+    private readonly List<SessionThreadMessageDto> _loadedThreadMessages = [];
+    private CodexSessionSummaryDto? _activeThreadSession;
+    private string _threadTitle = string.Empty;
+    private string _threadMeta = string.Empty;
+    private string _threadSummary = string.Empty;
+    private string _threadStatus = string.Empty;
+    private string _threadFilter = "All";
+    private bool _isThreadOpen;
+    private bool _isThreadLoading;
+    private int _threadStartIndex;
+
+    public ObservableCollection<SessionThreadMessageDto> ThreadMessages { get; } = [];
+
+    public ObservableCollection<string> ThreadFilters { get; } = ["All", "You", "Agent"];
+
+    public bool IsThreadOpen
+    {
+        get => _isThreadOpen;
+        private set => SetProperty(ref _isThreadOpen, value);
+    }
+
+    public string ThreadTitle
+    {
+        get => _threadTitle;
+        private set => SetProperty(ref _threadTitle, value);
+    }
+
+    public string ThreadMeta
+    {
+        get => _threadMeta;
+        private set => SetProperty(ref _threadMeta, value);
+    }
+
+    public string ThreadSummary
+    {
+        get => _threadSummary;
+        private set => SetProperty(ref _threadSummary, value);
+    }
+
+    public string ThreadStatus
+    {
+        get => _threadStatus;
+        private set => SetProperty(ref _threadStatus, value);
+    }
+
+    public bool IsThreadLoading
+    {
+        get => _isThreadLoading;
+        private set => SetProperty(ref _isThreadLoading, value);
+    }
+
+    public bool HasThreadMessages => ThreadMessages.Count > 0;
+
+    public bool CanLoadEarlierThread => _threadStartIndex > 0;
+
+    public string ThreadFilter
+    {
+        get => _threadFilter;
+        set
+        {
+            if (SetProperty(ref _threadFilter, value))
+            {
+                RebuildThreadView();
+            }
+        }
+    }
+
+    /// <summary>True when the transcript is open for this session (drives the card's own state).</summary>
+    public bool IsActiveThread(CodexSessionSummaryDto session) =>
+        _activeThreadSession is { } active &&
+        string.Equals(active.Id, session.Id, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(active.Agent, session.Agent, StringComparison.OrdinalIgnoreCase);
+
+    public async Task OpenThreadAsync(CodexSessionSummaryDto session, CancellationToken cancellationToken = default)
+    {
+        _activeThreadSession = session;
+        ThreadTitle = session.Title;
+        ThreadMeta = BuildThreadMeta(session);
+        ThreadFilter = "All";
+        _loadedThreadMessages.Clear();
+        ThreadMessages.Clear();
+        _threadStartIndex = 0;
+        ThreadSummary = string.Empty;
+        ThreadStatus = "Loading the transcript\u2026";
+        IsThreadOpen = true;
+        NotifyThreadStateChanged();
+
+        await LoadThreadWindowAsync(before: null, cancellationToken);
+    }
+
+    public void CloseThread()
+    {
+        IsThreadOpen = false;
+        _activeThreadSession = null;
+        _loadedThreadMessages.Clear();
+        ThreadMessages.Clear();
+        _threadStartIndex = 0;
+        ThreadSummary = string.Empty;
+        ThreadStatus = string.Empty;
+        NotifyThreadStateChanged();
+    }
+
+    public async Task LoadEarlierThreadAsync(CancellationToken cancellationToken = default)
+    {
+        if (!CanLoadEarlierThread || IsThreadLoading)
+        {
+            return;
+        }
+
+        await LoadThreadWindowAsync(_threadStartIndex, cancellationToken);
+    }
+
+    private async Task LoadThreadWindowAsync(int? before, CancellationToken cancellationToken)
+    {
+        if (_activeThreadSession is not { } session)
+        {
+            return;
+        }
+
+        IsThreadLoading = true;
+        try
+        {
+            var thread = await _bridgeApiClient.GetSessionThreadAsync(
+                session.Agent,
+                session.Id,
+                ThreadPageSize,
+                before,
+                cancellationToken);
+
+            if (thread is null)
+            {
+                ThreadStatus = "The bridge on the PC could not read this transcript. It may be on another machine, or the run has no saved transcript.";
+                ThreadSummary = string.Empty;
+                return;
+            }
+
+            _threadStartIndex = thread.StartIndex;
+            _loadedThreadMessages.InsertRange(0, thread.Messages);
+            ThreadStatus = thread.TotalCount == 0
+                ? "No readable turns were found in this transcript."
+                : string.Empty;
+            ThreadSummary = thread.TotalCount == 0
+                ? string.Empty
+                : $"{_loadedThreadMessages.Count:N0} of {thread.TotalCount:N0} messages";
+            RebuildThreadView();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ThreadStatus = FormatRequestFailure("Could not load the transcript", ex);
+        }
+        finally
+        {
+            IsThreadLoading = false;
+            NotifyThreadStateChanged();
+        }
+    }
+
+    private void RebuildThreadView()
+    {
+        var role = ThreadFilter switch
+        {
+            "You" => SessionMessageRole.User,
+            "Agent" => SessionMessageRole.Assistant,
+            _ => (SessionMessageRole?)null
+        };
+
+        ThreadMessages.Clear();
+        foreach (var message in _loadedThreadMessages)
+        {
+            if (role is null || message.Role == role || (role == SessionMessageRole.Assistant && message.Role == SessionMessageRole.Tool))
+            {
+                ThreadMessages.Add(message);
+            }
+        }
+
+        NotifyThreadStateChanged();
+    }
+
+    private void NotifyThreadStateChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasThreadMessages)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanLoadEarlierThread)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThreadEmptyMessage)));
+    }
+
+    public string ThreadEmptyMessage =>
+        IsThreadLoading
+            ? "Loading\u2026"
+            : ThreadStatus.Length > 0
+                ? ThreadStatus
+                : _loadedThreadMessages.Count == 0
+                    ? "No messages loaded yet."
+                    : "No messages match this filter.";
+
+    private static string BuildThreadMeta(CodexSessionSummaryDto session)
+    {
+        var parts = new List<string> { AgentKinds.DisplayName(session.Agent) };
+        if (!string.IsNullOrWhiteSpace(session.GitBranch))
+        {
+            parts.Add(session.GitBranch!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.WorkingDirectory))
+        {
+            parts.Add(session.WorkingDirectory);
+        }
+
+        return string.Join(" \u00B7 ", parts);
+    }
 
     /// <summary>True while the Issues tab is the one on screen; the GitHub board only refreshes then.</summary>
     public bool IssuesTabActive { get; set; }
@@ -1260,6 +1555,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionPageLabel)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasPreviousPage)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasNextPage)));
+        NotifySessionListStateChanged();
+    }
+
+    private void NotifySessionFilterChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SessionFilterSummary)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ActiveFilterCount)));
     }
 
     private void ApplyCachedFeed(FeedSnapshot? snapshot)
@@ -1276,6 +1578,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _lastRefreshedAt = snapshot.SavedAt;
         UpdateFeedFreshness();
         StatusBanner = $"Cached {SessionFeedSummary} \u00B7 refreshing\u2026";
+        NotifySessionListStateChanged();
     }
 
     private async Task SaveFeedCacheAsync(
@@ -1437,6 +1740,47 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void ApplyMonitoringSyncResult(MonitoringSyncResult result) =>
         NotificationWarning = result.WarningMessage ?? string.Empty;
+
+    /// <summary>
+    /// Sends a follow-up from the thread viewer. The active session is captured when the thread is
+    /// opened, so the composer keeps working even while the feed refreshes underneath it.
+    /// </summary>
+    public async Task<bool> SendThreadFollowUpAsync(string message, CancellationToken cancellationToken = default)
+    {
+        if (_activeThreadSession is not { } session)
+        {
+            ThreadStatus = "Open a thread before sending a follow-up.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            ThreadStatus = "Type a follow-up message first.";
+            return false;
+        }
+
+        try
+        {
+            ThreadStatus = $"Sending to {AgentKinds.DisplayName(session.Agent)}\u2026";
+            var response = await _bridgeApiClient.SendFollowUpAsync(
+                new SessionFollowUpRequest(session.Agent, session.Id, message.Trim(), session.WorkingDirectory),
+                cancellationToken);
+
+            ThreadStatus = response is null
+                ? "Follow-up sent."
+                : "Follow-up sent. You'll get a notification when the turn finishes.";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ThreadStatus = FormatRequestFailure("Follow-up failed", ex);
+            return false;
+        }
+        finally
+        {
+            NotifyThreadStateChanged();
+        }
+    }
 
     private string FormatRequestFailure(string prefix, Exception exception)
     {

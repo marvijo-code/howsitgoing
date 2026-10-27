@@ -19,9 +19,16 @@
           <SolidColorBrush x:Key="AccentBrush" Color="#A78BFA" />
           <SolidColorBrush x:Key="AccentDimBrush" Color="#7C3AED" />
           <SolidColorBrush x:Key="SeparatorBrush" Color="#27272A" />
-          <SolidColorBrush x:Key="InputBackgroundBrush" Color="#09090B" />
+          <SolidColorBrush x:Key="InputBackgroundBrush" Color="#1C1C22" />
+          <SolidColorBrush x:Key="SurfaceBrush" Color="#232329" />
+          <SolidColorBrush x:Key="SurfaceBorderBrush" Color="#3F3F46" />
           <SolidColorBrush x:Key="TabBarBackgroundBrush" Color="#18181B" />
           <SolidColorBrush x:Key="TabActiveBackgroundBrush" Color="#312E81" />
+          <!-- Uno's Material button states paint a solid accent on hover/press, which turns a pill
+               or a ghost button into a violet block mid-tap. Keep every state a quiet surface. -->
+          <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#2A2A33" />
+          <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#34343E" />
+          <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#1A1A1F" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Light">
           <SolidColorBrush x:Key="PageBackgroundBrush" Color="#FAFAFA" />
@@ -34,9 +41,14 @@
           <SolidColorBrush x:Key="AccentBrush" Color="#7C3AED" />
           <SolidColorBrush x:Key="AccentDimBrush" Color="#A78BFA" />
           <SolidColorBrush x:Key="SeparatorBrush" Color="#E4E4E7" />
-          <SolidColorBrush x:Key="InputBackgroundBrush" Color="#F4F4F5" />
+          <SolidColorBrush x:Key="InputBackgroundBrush" Color="#EFEFF2" />
+          <SolidColorBrush x:Key="SurfaceBrush" Color="#F4F4F5" />
+          <SolidColorBrush x:Key="SurfaceBorderBrush" Color="#D4D4D8" />
           <SolidColorBrush x:Key="TabBarBackgroundBrush" Color="#F4F4F5" />
           <SolidColorBrush x:Key="TabActiveBackgroundBrush" Color="#EDE9FE" />
+          <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#E8E8EC" />
+          <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#DEDEE4" />
+          <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#F2F2F5" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
 
@@ -47,6 +59,13 @@
       <converters:StatusToBackgroundBrushConverter x:Key="StatusToBackgroundBrush" />
       <converters:RelativeTimeConverter x:Key="RelativeTime" />
       <converters:AbsoluteTimeConverter x:Key="AbsoluteTime" />
+      <converters:MessageRoleToLabelConverter x:Key="RoleToLabel" />
+      <converters:MessageRoleToBrushConverter x:Key="RoleToBrush" />
+      <converters:MessageRoleToBackgroundBrushConverter x:Key="RoleToBackgroundBrush" />
+      <converters:MessageRoleToAlignmentConverter x:Key="RoleToAlignment" />
+      <converters:MessageRoleToMarginConverter x:Key="RoleToMargin" />
+      <converters:FilterMatchToBackgroundBrushConverter x:Key="FilterMatchBackground" />
+      <converters:FilterMatchToBrushConverter x:Key="FilterMatchBrush" />
 
       <!-- Caps the readable column on desktop/web; phones are narrower so it never applies there. -->
       <x:Double x:Key="ContentMaxWidth">900</x:Double>
@@ -287,67 +306,233 @@
         <!-- SESSIONS PANEL                           -->
         <!-- ════════════════════════════════════════ -->
 
-          <!-- Filter card -->
-          <Border Padding="14"
+          <!-- Filter bar. The text box lives INSIDE a collapsed panel: with it always on screen,
+               a drag that ended near the top of the feed could land on the search field and pop the
+               keyboard open (the "scrolling to the top opens search" report). Closed by default,
+               the top of the feed is inert until the Filter button is tapped. -->
+          <Border Padding="12"
                   Background="{ThemeResource CardBackgroundBrush}"
                   BorderBrush="{ThemeResource CardBorderBrush}"
                   BorderThickness="1"
-                  CornerRadius="14">
-            <StackPanel Spacing="8">
-              <TextBlock FontSize="11" FontWeight="SemiBold"
-                         Foreground="{ThemeResource MutedBrush}"
-                         Text="SEARCH" CharacterSpacing="60" />
-              <TextBox Background="{ThemeResource InputBackgroundBrush}"
-                       BorderThickness="0"
-                       CornerRadius="8"
-                       Foreground="{ThemeResource HeadingBrush}"
-                       PlaceholderText="Prompt, repo, branch, or message"
-                       Text="{Binding SearchQuery, Mode=TwoWay}"
-                       MaxHeight="48" />
-
-              <Grid ColumnDefinitions="*,8,*" Margin="0,2,0,0">
-                <StackPanel>
-                  <TextBlock FontSize="11" FontWeight="SemiBold"
-                             Foreground="{ThemeResource MutedBrush}"
-                             Text="STATUS" CharacterSpacing="60" />
-                  <ComboBox Margin="0,4,0,0"
-                            HorizontalAlignment="Stretch"
-                            BorderThickness="0"
-                            CornerRadius="8"
-                            ItemsSource="{Binding StatusFilters}"
-                            SelectedItem="{Binding SelectedStatus, Mode=TwoWay}" />
-                </StackPanel>
-                <StackPanel Grid.Column="2">
-                  <TextBlock FontSize="11" FontWeight="SemiBold"
-                             Foreground="{ThemeResource MutedBrush}"
-                             Text="AGENT" CharacterSpacing="60" />
-                  <ComboBox Margin="0,4,0,0"
-                            HorizontalAlignment="Stretch"
-                            BorderThickness="0"
-                            CornerRadius="8"
-                            ItemsSource="{Binding AgentFilters}"
-                            SelectedItem="{Binding SelectedAgent, Mode=TwoWay}" />
-                </StackPanel>
-              </Grid>
-
+                  CornerRadius="16">
+            <StackPanel Spacing="9">
               <Grid ColumnDefinitions="*,Auto">
-                <CheckBox Content="Include archived"
-                          Foreground="{ThemeResource BodyBrush}"
-                          IsChecked="{Binding IncludeArchived, Mode=TwoWay}" />
-                <Button Grid.Column="1"
-                        Padding="14,6"
-                        VerticalAlignment="Center"
-                        Background="Transparent"
-                        BorderBrush="{ThemeResource CardBorderBrush}"
-                        BorderThickness="1"
-                        Click="ApplyFilters_Click"
-                        CornerRadius="8">
-                  <TextBlock FontSize="12"
+                <StackPanel VerticalAlignment="Center" Spacing="1">
+                  <TextBlock FontSize="10"
                              FontWeight="SemiBold"
-                             Foreground="{ThemeResource AccentBrush}"
-                             Text="Apply" />
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="SESSION FEED"
+                             CharacterSpacing="90" />
+                  <TextBlock FontSize="13"
+                             Foreground="{ThemeResource BodyBrush}"
+                             Text="{Binding SessionFilterSummary}"
+                             TextTrimming="CharacterEllipsis"
+                             TextWrapping="NoWrap" />
+                </StackPanel>
+                <Button x:Name="FilterToggleButton"
+                        Grid.Column="1"
+                        Padding="12,7"
+                        VerticalAlignment="Center"
+                        Background="{ThemeResource InputBackgroundBrush}"
+                        BorderThickness="0"
+                        Click="ToggleFilters_Click"
+                        CornerRadius="10">
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                              FontSize="13"
+                              Foreground="{ThemeResource AccentBrush}"
+                              Glyph="&#xE71C;" />
+                    <TextBlock x:Name="FilterToggleLabel"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource AccentBrush}"
+                               Text="Filter" />
+                  </StackPanel>
                 </Button>
               </Grid>
+
+              <!-- One-tap status pills. Tapping the same pill again returns to All, so the common
+                   filter needs no second trip into the panel. -->
+              <Grid ColumnSpacing="6">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button Padding="0,7"
+                        HorizontalAlignment="Stretch"
+                        Background="{Binding SelectedStatus, Converter={StaticResource FilterMatchBackground}, ConverterParameter=All}"
+                        BorderThickness="0"
+                        Click="StatusPill_Click"
+                        CornerRadius="9"
+                        Tag="All">
+                  <TextBlock HorizontalAlignment="Center"
+                             FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{Binding SelectedStatus, Converter={StaticResource FilterMatchBrush}, ConverterParameter=All}"
+                             Text="All" />
+                </Button>
+                <Button Grid.Column="1"
+                        Padding="0,7"
+                        HorizontalAlignment="Stretch"
+                        Background="{Binding SelectedStatus, Converter={StaticResource FilterMatchBackground}, ConverterParameter=Running}"
+                        BorderThickness="0"
+                        Click="StatusPill_Click"
+                        CornerRadius="9"
+                        Tag="Running">
+                  <TextBlock HorizontalAlignment="Center"
+                             FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{Binding SelectedStatus, Converter={StaticResource FilterMatchBrush}, ConverterParameter=Running}"
+                             Text="Running" />
+                </Button>
+                <Button Grid.Column="2"
+                        Padding="0,7"
+                        HorizontalAlignment="Stretch"
+                        Background="{Binding SelectedStatus, Converter={StaticResource FilterMatchBackground}, ConverterParameter=Completed}"
+                        BorderThickness="0"
+                        Click="StatusPill_Click"
+                        CornerRadius="9"
+                        Tag="Completed">
+                  <TextBlock HorizontalAlignment="Center"
+                             FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{Binding SelectedStatus, Converter={StaticResource FilterMatchBrush}, ConverterParameter=Completed}"
+                             Text="Done" />
+                </Button>
+                <Button Grid.Column="3"
+                        Padding="0,7"
+                        HorizontalAlignment="Stretch"
+                        Background="{Binding SelectedStatus, Converter={StaticResource FilterMatchBackground}, ConverterParameter=Idle}"
+                        BorderThickness="0"
+                        Click="StatusPill_Click"
+                        CornerRadius="9"
+                        Tag="Idle">
+                  <TextBlock HorizontalAlignment="Center"
+                             FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{Binding SelectedStatus, Converter={StaticResource FilterMatchBrush}, ConverterParameter=Idle}"
+                             Text="Idle" />
+                </Button>
+                <Button Grid.Column="4"
+                        Padding="0,7"
+                        HorizontalAlignment="Stretch"
+                        Background="{Binding SelectedStatus, Converter={StaticResource FilterMatchBackground}, ConverterParameter=Archived}"
+                        BorderThickness="0"
+                        Click="StatusPill_Click"
+                        CornerRadius="9"
+                        Tag="Archived">
+                  <TextBlock HorizontalAlignment="Center"
+                             FontSize="11"
+                             FontWeight="SemiBold"
+                             Foreground="{Binding SelectedStatus, Converter={StaticResource FilterMatchBrush}, ConverterParameter=Archived}"
+                             Text="Archive" />
+                </Button>
+              </Grid>
+
+              <!-- The full filter panel, collapsed until asked for. -->
+              <StackPanel x:Name="FilterPanel" Spacing="9" Visibility="Collapsed">
+                <Border Height="1" Background="{ThemeResource SeparatorBrush}" />
+                <TextBox Background="{ThemeResource InputBackgroundBrush}"
+                         BorderThickness="0"
+                         CornerRadius="10"
+                         FontSize="13"
+                         Padding="12,10"
+                         Foreground="{ThemeResource HeadingBrush}"
+                         PlaceholderText="Search prompt, repo, branch, or message"
+                         Text="{Binding SearchQuery, Mode=TwoWay}"
+                         MaxHeight="48" />
+
+                <TextBlock FontSize="10"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource MutedBrush}"
+                           Text="AGENT"
+                           CharacterSpacing="90" />
+                <Grid ColumnSpacing="6">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <Button Padding="0,7"
+                          HorizontalAlignment="Stretch"
+                          Background="{Binding SelectedAgent, Converter={StaticResource FilterMatchBackground}, ConverterParameter=All}"
+                          BorderThickness="0"
+                          Click="AgentPill_Click"
+                          CornerRadius="9"
+                          Tag="All">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="{Binding SelectedAgent, Converter={StaticResource FilterMatchBrush}, ConverterParameter=All}"
+                               Text="All" />
+                  </Button>
+                  <Button Grid.Column="1"
+                          Padding="0,7"
+                          HorizontalAlignment="Stretch"
+                          Background="{Binding SelectedAgent, Converter={StaticResource FilterMatchBackground}, ConverterParameter=Codex}"
+                          BorderThickness="0"
+                          Click="AgentPill_Click"
+                          CornerRadius="9"
+                          Tag="Codex">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="{Binding SelectedAgent, Converter={StaticResource FilterMatchBrush}, ConverterParameter=Codex}"
+                               Text="Codex" />
+                  </Button>
+                  <Button Grid.Column="2"
+                          Padding="0,7"
+                          HorizontalAlignment="Stretch"
+                          Background="{Binding SelectedAgent, Converter={StaticResource FilterMatchBackground}, ConverterParameter=Claude Code}"
+                          BorderThickness="0"
+                          Click="AgentPill_Click"
+                          CornerRadius="9"
+                          Tag="Claude Code">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="{Binding SelectedAgent, Converter={StaticResource FilterMatchBrush}, ConverterParameter=Claude Code}"
+                               Text="Claude" />
+                  </Button>
+                  <Button Grid.Column="3"
+                          Padding="0,7"
+                          HorizontalAlignment="Stretch"
+                          Background="{Binding SelectedAgent, Converter={StaticResource FilterMatchBackground}, ConverterParameter=OpenCode}"
+                          BorderThickness="0"
+                          Click="AgentPill_Click"
+                          CornerRadius="9"
+                          Tag="OpenCode">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="{Binding SelectedAgent, Converter={StaticResource FilterMatchBrush}, ConverterParameter=OpenCode}"
+                               Text="OpenCode" />
+                  </Button>
+                </Grid>
+
+                <Grid ColumnDefinitions="*,Auto">
+                  <CheckBox Content="Include archived"
+                            FontSize="12"
+                            Foreground="{ThemeResource BodyBrush}"
+                            IsChecked="{Binding IncludeArchived, Mode=TwoWay}" />
+                  <Button Grid.Column="1"
+                          Padding="16,7"
+                          VerticalAlignment="Center"
+                          Background="{ThemeResource AccentBrush}"
+                          BorderThickness="0"
+                          Click="ApplyFilters_Click"
+                          CornerRadius="10">
+                    <TextBlock FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="White"
+                               Text="Apply" />
+                  </Button>
+                </Grid>
+              </StackPanel>
 
               <Grid ColumnDefinitions="*,Auto">
                 <TextBlock FontSize="11"
@@ -373,8 +558,8 @@
                         Background="{ThemeResource CardBackgroundBrush}"
                         BorderBrush="{ThemeResource CardBorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="14">
-                  <StackPanel Spacing="7">
+                        CornerRadius="16">
+                  <StackPanel Spacing="8">
 
                     <!-- chips row -->
                     <Grid ColumnDefinitions="Auto,Auto,*,Auto">
@@ -442,125 +627,95 @@
                                  TextWrapping="NoWrap" />
                     </Grid>
 
-                    <!-- last message -->
+                    <!-- Preview only. Two dim lines let the eye scan titles; the whole message and
+                         the transcript are one tap away, which is what keeps a 10-card page light. -->
                     <TextBlock FontSize="13"
-                               Foreground="{ThemeResource BodyBrush}"
-                               MaxLines="3"
+                               Foreground="{ThemeResource MutedBrush}"
+                               MaxLines="2"
                                Text="{Binding LastAgentMessage}"
                                TextTrimming="CharacterEllipsis"
-                               TextWrapping="Wrap" />
+                               TextWrapping="Wrap"
+                               Visibility="{Binding LastAgentMessage, Converter={StaticResource StringToVisibility}}" />
 
-                    <!-- expandable full details -->
-                    <Expander Padding="0"
-                              HorizontalAlignment="Stretch"
-                              HorizontalContentAlignment="Stretch"
-                              Background="Transparent"
-                              BorderThickness="0">
-                      <Expander.Header>
-                        <TextBlock FontSize="11"
+                    <!-- Primary action: the full conversation for this session. -->
+                    <Button Padding="12,8"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Stretch"
+                            Background="{ThemeResource SurfaceBrush}"
+                            BorderThickness="0"
+                            Click="OpenThread_Click"
+                            CornerRadius="10">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock FontSize="12"
                                    FontWeight="SemiBold"
-                                   Foreground="{ThemeResource MutedBrush}"
-                                   Text="DETAILS"
-                                   CharacterSpacing="60" />
-                      </Expander.Header>
-                      <StackPanel Margin="0,6,0,0" Spacing="6">
-                        <Grid ColumnDefinitions="88,*">
-                          <TextBlock FontSize="11" Foreground="{ThemeResource MutedBrush}" Text="Session" />
-                          <TextBlock Grid.Column="1" FontSize="11"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     IsTextSelectionEnabled="True"
-                                     Text="{Binding Id}"
-                                     TextWrapping="Wrap" />
-                        </Grid>
-                        <Grid ColumnDefinitions="88,*">
-                          <TextBlock FontSize="11" Foreground="{ThemeResource MutedBrush}" Text="Source" />
-                          <TextBlock Grid.Column="1" FontSize="11"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     Text="{Binding Source}"
-                                     TextWrapping="Wrap" />
-                        </Grid>
-                        <Grid ColumnDefinitions="88,*">
-                          <TextBlock FontSize="11" Foreground="{ThemeResource MutedBrush}" Text="Directory" />
-                          <TextBlock Grid.Column="1" FontSize="11"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     IsTextSelectionEnabled="True"
-                                     Text="{Binding WorkingDirectory}"
-                                     TextWrapping="Wrap" />
-                        </Grid>
-                        <Grid ColumnDefinitions="88,*">
-                          <TextBlock FontSize="11" Foreground="{ThemeResource MutedBrush}" Text="Branch" />
-                          <TextBlock Grid.Column="1" FontSize="11"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     Text="{Binding GitBranch}"
-                                     TextWrapping="Wrap" />
-                        </Grid>
-                        <Grid ColumnDefinitions="88,*">
-                          <TextBlock FontSize="11" Foreground="{ThemeResource MutedBrush}" Text="Created" />
-                          <TextBlock Grid.Column="1" FontSize="11"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     Text="{Binding CreatedAt, Converter={StaticResource AbsoluteTime}}" />
-                        </Grid>
-                        <Grid ColumnDefinitions="88,*">
-                          <TextBlock FontSize="11" Foreground="{ThemeResource MutedBrush}" Text="Updated" />
-                          <TextBlock Grid.Column="1" FontSize="11"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     Text="{Binding UpdatedAt, Converter={StaticResource AbsoluteTime}}" />
-                        </Grid>
-                        <Grid ColumnDefinitions="88,*">
-                          <TextBlock FontSize="11" Foreground="{ThemeResource MutedBrush}" Text="Completed" />
-                          <TextBlock Grid.Column="1" FontSize="11"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     Text="{Binding CompletedAt, Converter={StaticResource AbsoluteTime}}" />
-                        </Grid>
-                        <TextBlock FontSize="11"
-                                   FontWeight="SemiBold"
-                                   Foreground="{ThemeResource MutedBrush}"
-                                   Margin="0,4,0,0"
-                                   Text="LAST MESSAGE"
-                                   CharacterSpacing="60" />
-                        <ScrollViewer MaxHeight="320"
-                                      HorizontalScrollMode="Disabled"
-                                      VerticalScrollBarVisibility="Auto">
-                          <TextBlock FontSize="12"
-                                     Foreground="{ThemeResource BodyBrush}"
-                                     IsTextSelectionEnabled="True"
-                                     Text="{Binding LastAgentMessage}"
-                                     TextWrapping="Wrap" />
-                        </ScrollViewer>
-                      </StackPanel>
-                    </Expander>
-
-                    <Rectangle Height="1"
-                               Fill="{ThemeResource SeparatorBrush}"
-                               Margin="0,2" />
-
-                    <!-- follow-up composer -->
-                    <Grid ColumnDefinitions="*,8,Auto">
-                      <TextBox AcceptsReturn="True"
-                               Background="{ThemeResource InputBackgroundBrush}"
-                               BorderThickness="0"
-                               CornerRadius="10"
-                               FontSize="13"
-                               Foreground="{ThemeResource HeadingBrush}"
-                               MaxHeight="96"
-                               PlaceholderText="Send a follow-up…"
-                               TextWrapping="Wrap" />
-                      <Button Grid.Column="2"
-                              Padding="14,9"
-                              VerticalAlignment="Bottom"
-                              Background="{ThemeResource AccentBrush}"
-                              Click="SendFollowUp_Click"
-                              CornerRadius="10"
-                              Foreground="White">
-                        <TextBlock FontSize="12" FontWeight="SemiBold" Text="Send" />
-                      </Button>
-                    </Grid>
+                                   Foreground="{ThemeResource AccentBrush}"
+                                   Text="Read thread" />
+                        <FontIcon Grid.Column="1"
+                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                  FontSize="11"
+                                  Foreground="{ThemeResource AccentBrush}"
+                                  Glyph="&#xE76C;" />
+                      </Grid>
+                    </Button>
 
                   </StackPanel>
                 </Border>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
+
+          <!-- Loading state for a cold start: no cached rows yet, first fetch still running. -->
+          <Border Padding="18"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="16"
+                  Visibility="{Binding ShowSessionsLoadingState, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel HorizontalAlignment="Center" Spacing="8">
+              <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                        FontSize="22"
+                        Foreground="{ThemeResource MutedBrush}"
+                        Glyph="&#xE895;" />
+              <TextBlock HorizontalAlignment="Center"
+                         FontSize="13"
+                         Foreground="{ThemeResource MutedBrush}"
+                         Text="Loading sessions…"
+                         TextAlignment="Center"
+                         TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+
+          <!-- Real empty state. No placeholder rows: if nothing matches, say so and offer the way out. -->
+          <Border Padding="18"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="16"
+                  Visibility="{Binding ShowSessionsEmptyState, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel HorizontalAlignment="Center" Spacing="8">
+              <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                        FontSize="22"
+                        Foreground="{ThemeResource MutedBrush}"
+                        Glyph="&#xE721;" />
+              <TextBlock HorizontalAlignment="Center"
+                         FontSize="13"
+                         Foreground="{ThemeResource BodyBrush}"
+                         Text="No sessions match these filters."
+                         TextAlignment="Center"
+                         TextWrapping="Wrap" />
+              <Button Padding="14,7"
+                      HorizontalAlignment="Center"
+                      Background="{ThemeResource InputBackgroundBrush}"
+                      BorderThickness="0"
+                      Click="ClearFilters_Click"
+                      CornerRadius="10">
+                <TextBlock FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource AccentBrush}"
+                           Text="Clear filters" />
+              </Button>
+            </StackPanel>
+          </Border>
 
           <!-- Pager: one page of cards at a time, so the realised card count stays bounded on a
                phone no matter how far back the user walks. -->
@@ -597,6 +752,217 @@
                          Text="Older" />
             </Button>
           </Grid>
+        </StackPanel>
+
+        <!-- ════════════════════════════════════════ -->
+        <!-- THREAD PANEL                             -->
+        <!-- ════════════════════════════════════════ -->
+        <!-- Lives in the same page-level scroller as everything else: a nested scroller receives no
+             touch on the phone. Opening a thread swaps this panel in and scrolls the page to the top. -->
+        <StackPanel x:Name="PanelThread" Spacing="10" Visibility="Collapsed">
+
+          <Border Padding="12"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="16">
+            <StackPanel Spacing="8">
+              <Grid ColumnDefinitions="Auto,*">
+                <Button Padding="9"
+                        VerticalAlignment="Top"
+                        AutomationProperties.Name="Back to sessions"
+                        Background="{ThemeResource InputBackgroundBrush}"
+                        BorderThickness="0"
+                        Click="CloseThread_Click"
+                        CornerRadius="10">
+                  <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            FontSize="14"
+                            Foreground="{ThemeResource AccentBrush}"
+                            Glyph="&#xE72B;" />
+                </Button>
+                <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="2">
+                  <TextBlock FontSize="15"
+                             FontWeight="SemiBold"
+                             Foreground="{ThemeResource HeadingBrush}"
+                             MaxLines="2"
+                             Text="{Binding ThreadTitle}"
+                             TextTrimming="CharacterEllipsis"
+                             TextWrapping="Wrap" />
+                  <TextBlock FontSize="11"
+                             Foreground="{ThemeResource MutedBrush}"
+                             Text="{Binding ThreadMeta}"
+                             TextTrimming="CharacterEllipsis"
+                             TextWrapping="NoWrap" />
+                </StackPanel>
+              </Grid>
+              <Grid ColumnDefinitions="Auto,*">
+                <TextBlock FontSize="11"
+                           Foreground="{ThemeResource AccentDimBrush}"
+                           Text="{Binding ThreadSummary}" />
+                <TextBlock Grid.Column="1"
+                           Margin="8,0,0,0"
+                           HorizontalAlignment="Right"
+                           FontSize="11"
+                           Foreground="{ThemeResource MutedBrush}"
+                           Text="{Binding ThreadStatus}"
+                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="NoWrap" />
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <!-- Who to show. Filtering is client-side over the windows already loaded, so switching
+               is instant and never refetches. -->
+          <Grid ColumnSpacing="6">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Button Padding="0,7"
+                    HorizontalAlignment="Stretch"
+                    Background="{Binding ThreadFilter, Converter={StaticResource FilterMatchBackground}, ConverterParameter=All}"
+                    BorderThickness="0"
+                    Click="ThreadFilter_Click"
+                    CornerRadius="9"
+                    Tag="All">
+              <TextBlock HorizontalAlignment="Center"
+                         FontSize="11"
+                         FontWeight="SemiBold"
+                         Foreground="{Binding ThreadFilter, Converter={StaticResource FilterMatchBrush}, ConverterParameter=All}"
+                         Text="All" />
+            </Button>
+            <Button Grid.Column="1"
+                    Padding="0,7"
+                    HorizontalAlignment="Stretch"
+                    Background="{Binding ThreadFilter, Converter={StaticResource FilterMatchBackground}, ConverterParameter=You}"
+                    BorderThickness="0"
+                    Click="ThreadFilter_Click"
+                    CornerRadius="9"
+                    Tag="You">
+              <TextBlock HorizontalAlignment="Center"
+                         FontSize="11"
+                         FontWeight="SemiBold"
+                         Foreground="{Binding ThreadFilter, Converter={StaticResource FilterMatchBrush}, ConverterParameter=You}"
+                         Text="You" />
+            </Button>
+            <Button Grid.Column="2"
+                    Padding="0,7"
+                    HorizontalAlignment="Stretch"
+                    Background="{Binding ThreadFilter, Converter={StaticResource FilterMatchBackground}, ConverterParameter=Agent}"
+                    BorderThickness="0"
+                    Click="ThreadFilter_Click"
+                    CornerRadius="9"
+                    Tag="Agent">
+              <TextBlock HorizontalAlignment="Center"
+                         FontSize="11"
+                         FontWeight="SemiBold"
+                         Foreground="{Binding ThreadFilter, Converter={StaticResource FilterMatchBrush}, ConverterParameter=Agent}"
+                         Text="Agent" />
+            </Button>
+          </Grid>
+
+          <Button Padding="12,8"
+                  HorizontalAlignment="Stretch"
+                  Background="{ThemeResource InputBackgroundBrush}"
+                  BorderThickness="0"
+                  Click="LoadEarlierThread_Click"
+                  CornerRadius="10"
+                  Visibility="{Binding CanLoadEarlierThread, Converter={StaticResource BoolToVisibility}}">
+            <TextBlock FontSize="12"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource AccentBrush}"
+                       Text="Load earlier messages" />
+          </Button>
+
+          <ItemsControl ItemsSource="{Binding ThreadMessages}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="contracts:SessionThreadMessageDto">
+                <Border Margin="{Binding Role, Converter={StaticResource RoleToMargin}}"
+                        Padding="12"
+                        HorizontalAlignment="{Binding Role, Converter={StaticResource RoleToAlignment}}"
+                        Background="{Binding Role, Converter={StaticResource RoleToBackgroundBrush}}"
+                        BorderBrush="{ThemeResource CardBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="14">
+                  <StackPanel Spacing="4">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock FontSize="10"
+                                 FontWeight="SemiBold"
+                                 CharacterSpacing="90"
+                                 Foreground="{Binding Role, Converter={StaticResource RoleToBrush}}"
+                                 Text="{Binding Role, Converter={StaticResource RoleToLabel}}" />
+                      <TextBlock Grid.Column="1"
+                                 FontSize="10"
+                                 Foreground="{ThemeResource MutedBrush}"
+                                 Text="{Binding CreatedAt, Converter={StaticResource RelativeTime}}" />
+                    </Grid>
+                    <TextBlock FontSize="13"
+                               Foreground="{ThemeResource BodyBrush}"
+                               IsTextSelectionEnabled="True"
+                               Text="{Binding Text}"
+                               TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <!-- Loading / unavailable / filtered-out. Real states, never fake bubbles. -->
+          <Border Padding="18"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="16"
+                  Visibility="{Binding HasThreadMessages, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+            <StackPanel HorizontalAlignment="Center" Spacing="8">
+              <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                        FontSize="22"
+                        Foreground="{ThemeResource MutedBrush}"
+                        Glyph="&#xE8BD;" />
+              <TextBlock HorizontalAlignment="Center"
+                         FontSize="13"
+                         Foreground="{ThemeResource BodyBrush}"
+                         Text="{Binding ThreadEmptyMessage}"
+                         TextAlignment="Center"
+                         TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+
+          <Border Padding="12"
+                  Background="{ThemeResource CardBackgroundBrush}"
+                  BorderBrush="{ThemeResource CardBorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="16">
+            <StackPanel Spacing="8">
+              <TextBlock FontSize="10"
+                         FontWeight="SemiBold"
+                         Foreground="{ThemeResource MutedBrush}"
+                         Text="FOLLOW-UP"
+                         CharacterSpacing="90" />
+              <Grid ColumnDefinitions="*,8,Auto">
+                <TextBox x:Name="ThreadComposer"
+                         AcceptsReturn="True"
+                         Background="{ThemeResource InputBackgroundBrush}"
+                         BorderThickness="0"
+                         CornerRadius="10"
+                         FontSize="13"
+                         Foreground="{ThemeResource HeadingBrush}"
+                         MaxHeight="96"
+                         PlaceholderText="Continue this thread…"
+                         TextWrapping="Wrap" />
+                <Button Grid.Column="2"
+                        Padding="16,9"
+                        VerticalAlignment="Bottom"
+                        Background="{ThemeResource AccentBrush}"
+                        Click="SendThreadFollowUp_Click"
+                        CornerRadius="10"
+                        Foreground="White">
+                  <TextBlock FontSize="12" FontWeight="SemiBold" Text="Send" />
+                </Button>
+              </Grid>
+            </StackPanel>
+          </Border>
         </StackPanel>
 
         <!-- ════════════════════════════════════════ -->

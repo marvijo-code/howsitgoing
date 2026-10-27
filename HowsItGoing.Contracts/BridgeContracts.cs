@@ -297,6 +297,73 @@ public static class SessionPaging
     }
 }
 
+/// <summary>Who wrote one message in a session transcript.</summary>
+public enum SessionMessageRole
+{
+    User,
+    Assistant,
+    Tool
+}
+
+/// <summary>
+/// One readable turn of a session transcript. Tool rows carry only a short summary (the tool name
+/// and its first line), because a full tool payload is unreadable on a phone and can be megabytes.
+/// </summary>
+public sealed record SessionThreadMessageDto(
+    string Id,
+    SessionMessageRole Role,
+    string Text,
+    DateTimeOffset? CreatedAt);
+
+/// <summary>
+/// A window of one session's transcript, newest-anchored. <see cref="StartIndex"/> and
+/// <see cref="TotalCount"/> let the app say "showing 40 of 213" and ask for the window before
+/// <see cref="StartIndex"/> without the bridge ever sending the whole 25 MB rollout file.
+/// </summary>
+public sealed record SessionThreadDto(
+    string Agent,
+    string SessionId,
+    string Title,
+    string? WorkingDirectory,
+    string? GitBranch,
+    IReadOnlyList<SessionThreadMessageDto> Messages,
+    int TotalCount,
+    int StartIndex,
+    DateTimeOffset GeneratedAt)
+{
+    public bool HasEarlierMessages => StartIndex > 0;
+
+    public bool HasLaterMessages => StartIndex + Messages.Count < TotalCount;
+}
+
+/// <summary>
+/// Transcript paging bounds shared by the bridge and the app. Windows are counted from the end of
+/// the conversation because the newest turn is what a user opens a thread for; older turns arrive
+/// only when the user asks for them.
+/// </summary>
+public static class SessionThreadPaging
+{
+    public const int DefaultPageSize = 40;
+    public const int MaxPageSize = 200;
+
+    public static int ClampPageSize(int limit) =>
+        Math.Clamp(limit <= 0 ? DefaultPageSize : limit, 1, MaxPageSize);
+
+    /// <summary>
+    /// Resolves the window to return. <paramref name="before"/> is an exclusive end index; null
+    /// means "the newest window". A value outside the transcript clamps into range, so a stale
+    /// index from a phone that has been asleep still returns something useful.
+    /// </summary>
+    public static (int Start, int Count) SelectWindow(int totalCount, int limit, int? before)
+    {
+        var safeTotal = Math.Max(0, totalCount);
+        var size = ClampPageSize(limit);
+        var end = Math.Clamp(before ?? safeTotal, 0, safeTotal);
+        var start = Math.Max(0, end - size);
+        return (start, end - start);
+    }
+}
+
 /// <summary>
 /// Deterministic channel fingerprint. Android keeps a channel's sound for good, so the id must
 /// change when the sound/vibration/importance changes - and must stay the SAME across process

@@ -6,7 +6,9 @@
 
 - Lists Codex, Claude Code, and OpenCode sessions in a paged feed (10 cards per page with
   Newer/Older paging, keyset cursors, exact match count) so a 13k-row shared mirror stays fast
-- Filters sessions by text, status, source, and archived state
+- Opens any session's whole transcript on the phone: newest-anchored windows with Load earlier,
+  All/You/Agent filters, and a follow-up composer under the last turn
+- Filters sessions by text, status (one-tap pills), agent, and archived state
 - Raises Android device notifications for agent and GitHub events, with configurable sound,
   vibration, importance, poll cadence, alert types and quiet hours
 - Monitors the repo's GitHub push events through the local bridge

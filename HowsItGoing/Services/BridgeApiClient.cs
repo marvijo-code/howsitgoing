@@ -105,8 +105,46 @@ public sealed class BridgeApiClient
         }
     }
 
-    public async Task<SessionFollowUpResponse?> SendFollowUpAsync(SessionFollowUpRequest request, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// One window of a session transcript for the thread viewer. A 404 means the bridge cannot read
+    /// that transcript (another machine, or no saved rollout) and is reported as null so the viewer
+    /// can explain it instead of showing a raw HTTP error.
+    /// </summary>
+    public async Task<SessionThreadDto?> GetSessionThreadAsync(
+        string agent,
+        string sessionId,
+        int limit,
+        int? before,
+        CancellationToken cancellationToken = default)
     {
+        var endpoint = BuildEndpoint(
+            "/api/sessions/thread",
+            new Dictionary<string, string?>
+            {
+                ["agent"] = agent,
+                ["sessionId"] = sessionId,
+                ["limit"] = SessionThreadPaging.ClampPageSize(limit).ToString(),
+                ["before"] = before?.ToString()
+            });
+
+        var settings = await _settingsStore.LoadAsync(cancellationToken);
+        var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
+        var client = GetClient(baseUrl, settings.BridgeAccessToken);
+        using var response = await SendWithRetryAsync(
+            token => client.GetAsync(endpoint, token),
+            cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonSerializer.DeserializeAsync<SessionThreadDto>(stream, SerializerOptions, cancellationToken);
+    }
+
+    public async Task<SessionFollowUpResponse?> SendFollowUpAsync(SessionFollowUpRequest request, CancellationToken cancellationToken = default)    {
         var settings = await _settingsStore.LoadAsync(cancellationToken);
         var baseUrl = await ResolveBaseUrlAsync(settings, cancellationToken);
         var client = GetClient(baseUrl, settings.BridgeAccessToken);
