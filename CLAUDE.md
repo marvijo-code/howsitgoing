@@ -31,8 +31,7 @@ dotnet test HowsItGoing.Tests; dotnet test HowsItGoing.Bridge.Tests
 
 ## Rules / gotchas
 
-- **The session feed is paged, and the Sessions tab uses the page-level ScrollViewer.** `/api/sessions?offset=&limit=&cursor=`
-  returns `SessionPageDto` (items + total + next cursor); the shared MySQL mirror uses SQL `LIMIT`
+- **The session feed is paged, and the Sessions tab uses the page-level ScrollViewer.** `/api/sessions?offset=&limit=&cursor=`  returns `SessionPageDto` (items + total + next cursor); the shared MySQL mirror uses SQL `LIMIT`
   and a keyset cursor (`updated_at desc, id`), because `OFFSET 12000` cost 3.4s. The app shows
   **10 cards per page** with Newer/Older paging: an ItemsControl realises every card, and 30 rich
   cards were enough to block the phone's UI thread past Android's 5s input timeout (a real ANR).
@@ -40,6 +39,20 @@ dotnet test HowsItGoing.Tests; dotnet test HowsItGoing.Bridge.Tests
   the OPPO at all - text boxes inside it never focused and drags did nothing - so all four panels
   stay in the one page-level `PanelScroller`. Do not reintroduce a per-tab ScrollViewer or raise the
   page size without testing on the phone.
+- **The thread viewer reads transcripts on demand, never on a tick.**
+  `/api/sessions/thread?agent=&sessionId=&limit=&before=` returns a `SessionThreadDto`: one
+  newest-anchored window plus `startIndex`/`totalCount`, so the app can say "40 of 146" and ask for
+  the window before `startIndex`. `SessionThreadService` parses the Codex rollout JSONL
+  (`response_item` role user/assistant, `event_msg` for older files), Claude project JSONL and the
+  OpenCode `session_message`/`part` tables, drops injected machine turns (`<heartbeat>`,
+  `environment_context`, `system-reminder`, the `AGENTS.md` preamble) and collapses consecutive tool
+  rows into one "Ran a, b" line. A Codex rollout reaches 25 MB, so this endpoint stays out of
+  `RefreshAsync` and out of the 4-second aggregator cache.
+- **The Sessions filter panel is collapsed by default, and the search box lives inside it.** With
+  the TextBox always on screen, a drag that ended near the top of the feed landed on the field and
+  raised the keyboard - the "scrolling to the top randomly opens search" report. Keep the top of
+  the feed inert (header row + status pills only) and release focus (`ReleaseFocus`) after Apply,
+  paging and tab switches.
 - **Schema changes in `SharedBridgeStore` must be guarded by information_schema checks.** An
   unconditional `alter table ... modify column` runs on every bridge start; on a 13k-row mirror that
   made the first page take 5s. `EnsureIndexAsync`/`ColumnExistsAsync` only change what is missing.

@@ -119,23 +119,166 @@ public sealed partial class MainPage : Page
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
+        ReleaseFocus();
         await ViewModel.RefreshAsync();
+    }
+
+    private void ToggleFilters_Click(object sender, RoutedEventArgs e)
+    {
+        var isOpen = FilterPanel.Visibility == Visibility.Visible;
+        FilterPanel.Visibility = isOpen ? Visibility.Collapsed : Visibility.Visible;
+        FilterToggleLabel.Text = isOpen ? "Filter" : "Close";
+        if (isOpen)
+        {
+            // Closing the panel is what used to happen by accident; leaving focus inside the search
+            // box would keep the keyboard up over a feed the user is no longer filtering.
+            ReleaseFocus();
+        }
+    }
+
+    private void StatusPill_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string status)
+        {
+            return;
+        }
+
+        // Tapping the active pill clears the filter, so "show everything" is one tap from anywhere.
+        ViewModel.SelectedStatus = string.Equals(ViewModel.SelectedStatus, status, StringComparison.OrdinalIgnoreCase)
+            ? "All"
+            : status;
+
+        ReleaseFocus();
+    }
+
+    private void AgentPill_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string agent)
+        {
+            return;
+        }
+
+        // Tapping the active pill clears the filter, so "show everything" is one tap from anywhere.
+        ViewModel.SelectedAgent = string.Equals(ViewModel.SelectedAgent, agent, StringComparison.OrdinalIgnoreCase)
+            ? "All"
+            : agent;
+
+        ReleaseFocus();
+    }
+
+    private async void ClearFilters_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SearchQuery = string.Empty;
+        ViewModel.SelectedAgent = "All";
+        ViewModel.IncludeArchived = false;
+        ViewModel.SelectedStatus = "All";
+        ReleaseFocus();
+        await ViewModel.RefreshAsync(resetPaging: true);
+    }
+
+    /// <summary>
+    /// Swaps the sessions list for the transcript inside the same page-level scroller. A nested
+    /// scroller gets no touch on the phone, so the thread is a panel, not an overlay.
+    /// </summary>
+    private async void OpenThread_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not CodexSessionSummaryDto session)
+        {
+            return;
+        }
+
+        ReleaseFocus();
+        PanelSessions.Visibility = Visibility.Collapsed;
+        PanelThread.Visibility = Visibility.Visible;
+        PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
+        await ViewModel.OpenThreadAsync(session);
+
+        // Land on the newest turn, the way every chat app opens a conversation. The layout pass
+        // that measures the bubbles has not run yet when OpenThreadAsync returns, so the jump is
+        // queued after it.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            PanelScroller.UpdateLayout();
+            PanelScroller.ChangeView(null, PanelScroller.ScrollableHeight, null, disableAnimation: true);
+        });
+    }
+
+    private void CloseThread_Click(object sender, RoutedEventArgs e)
+    {
+        ReleaseFocus();
+        ViewModel.CloseThread();
+        PanelThread.Visibility = Visibility.Collapsed;
+        PanelSessions.Visibility = Visibility.Visible;
+        PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
+    }
+
+    private async void LoadEarlierThread_Click(object sender, RoutedEventArgs e)
+    {
+        // Prepending a window grows the content above the viewport. Remember how much was added
+        // and shift the offset by the same amount, so the message the user was reading stays put.
+        var beforeOffset = PanelScroller.VerticalOffset;
+        var beforeHeight = PanelScroller.ScrollableHeight;
+
+        await ViewModel.LoadEarlierThreadAsync();
+
+        PanelScroller.UpdateLayout();
+        var added = Math.Max(0, PanelScroller.ScrollableHeight - beforeHeight);
+        if (added > 0)
+        {
+            PanelScroller.ChangeView(null, beforeOffset + added, null, disableAnimation: true);
+        }
+    }
+
+    private void ThreadFilter_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button button && button.Tag is string filter)
+        {
+            ViewModel.ThreadFilter = filter;
+        }
+    }
+
+    private async void SendThreadFollowUp_Click(object sender, RoutedEventArgs e)
+    {
+        var sent = await ViewModel.SendThreadFollowUpAsync(ThreadComposer.Text);
+        if (sent)
+        {
+            ThreadComposer.Text = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Takes focus off any text box. Android raises the soft keyboard for a focused input, and a
+    /// scroll that ended near the search field used to look like it "opened search by itself".
+    /// </summary>
+    private void ReleaseFocus()
+    {
+        try
+        {
+            Focus(FocusState.Programmatic);
+        }
+        catch
+        {
+            // Some heads have no focus manager; the panel state is still correct.
+        }
     }
 
     private async void ApplyFilters_Click(object sender, RoutedEventArgs e)
     {
+        ReleaseFocus();
         // A new search or filter starts from the newest page.
         await ViewModel.RefreshAsync(resetPaging: true);
     }
 
     private async void PreviousSessionsPage_Click(object sender, RoutedEventArgs e)
     {
+        ReleaseFocus();
         await ViewModel.PreviousSessionsPageAsync();
         PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
     }
 
     private async void NextSessionsPage_Click(object sender, RoutedEventArgs e)
     {
+        ReleaseFocus();
         await ViewModel.NextSessionsPageAsync();
         PanelScroller.ChangeView(null, 0, null, disableAnimation: true);
     }
@@ -159,36 +302,6 @@ public sealed partial class MainPage : Page
 
     private void ProviderOpenCode_Click(object sender, RoutedEventArgs e) =>
         ViewModel.AgentProvider = AgentProviders.OpenCode;
-
-    private async void SendFollowUp_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button button ||
-            button.DataContext is not CodexSessionSummaryDto session)
-        {
-            return;
-        }
-
-        var composer = FindComposerTextBox(button);
-        var message = composer?.Text ?? string.Empty;
-        button.IsEnabled = false;
-        try
-        {
-            var sent = await ViewModel.SendFollowUpAsync(session, message);
-            if (sent && composer is not null)
-            {
-                composer.Text = string.Empty;
-            }
-        }
-        finally
-        {
-            button.IsEnabled = true;
-        }
-    }
-
-    private static TextBox? FindComposerTextBox(Button sendButton) =>
-        sendButton.Parent is Grid composerRow
-            ? composerRow.Children.OfType<TextBox>().FirstOrDefault()
-            : null;
 
     private async void PushToggle_Toggled(object sender, RoutedEventArgs e)
     {
@@ -268,12 +381,20 @@ public sealed partial class MainPage : Page
 
             // One page-level scroller; the tabs swap panels inside it.
             PanelScroller.Visibility = Visibility.Visible;
+            PanelThread.Visibility = Visibility.Collapsed;
             PanelSessions.Visibility = index == 0 ? Visibility.Visible : Visibility.Collapsed;
             PanelNotifications.Visibility = index == 1 ? Visibility.Visible : Visibility.Collapsed;
             PanelIssues.Visibility = index == 2 ? Visibility.Visible : Visibility.Collapsed;
             PanelAgent.Visibility = index == 3 ? Visibility.Visible : Visibility.Collapsed;
 
             ViewModel.IssuesTabActive = index == 2;
+            if (index != 0)
+            {
+                // Leaving the feed closes any open transcript so returning to Sessions never lands
+                // on a stale thread from ten minutes ago.
+                ViewModel.CloseThread();
+            }
+
             if (index == 1)
             {
                 // Device tones come from the media provider and are read off the UI thread.
