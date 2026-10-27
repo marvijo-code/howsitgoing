@@ -30,6 +30,7 @@ public sealed class SessionThreadTests
                 Line("""{"timestamp":"2026-10-12T09:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix the feed"}]}}"""),
                 Line("""{"timestamp":"2026-10-12T09:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"On it."}]}}"""),
                 Line("""{"timestamp":"2026-10-12T09:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<heartbeat>."}]}}"""),
+                Line("""{"timestamp":"2026-10-12T09:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<heartbeat>\n<automation_id>social-post-follow-up</automation_id>\n<decision>DONT_NOTIFY</decision>\n</heartbeat>\n<oai-mem-citation>MEMORY.md:11</oai-mem-citation>"}]}}"""),
                 Line("""{"timestamp":"2026-10-12T09:00:05Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Thanks"}]}}""")
             ]);
 

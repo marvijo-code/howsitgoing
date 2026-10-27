@@ -27,7 +27,7 @@ public sealed class SessionThreadService
     private const int MaxToolNamesPerRow = 4;
 
     private static readonly Regex InjectedContextBlock = new(
-        @"<(environment_context|user_instructions|system-reminder|task-notification)>.*?</\1>",
+        @"<(environment_context|user_instructions|system-reminder|task-notification|oai-mem-citation)>.*?</\1>",
         RegexOptions.Singleline | RegexOptions.Compiled);
 
     private static readonly Regex LeadingBracketContext = new(
@@ -662,14 +662,22 @@ public sealed class SessionThreadService
             return;
         }
 
-        if (role == SessionMessageRole.User && IsInjectedUserMessage(cleaned))
+        // Injected blocks (system reminders, memory citations, environment context) can arrive on
+        // any role, including the model echoing a heartbeat back.
+        cleaned = StripInjectedContext(cleaned);
+        if (string.IsNullOrWhiteSpace(cleaned))
         {
             return;
         }
 
-        // Automation runs make the model answer a heartbeat with the literal word; it is not a
-        // turn anyone wants to read in a transcript.
-        if (cleaned.StartsWith("<heartbeat>", StringComparison.OrdinalIgnoreCase) && cleaned.Length <= 20)
+        // Automation runs make the model answer a heartbeat with the heartbeat XML itself; that is
+        // not a turn anyone wants to read in a transcript.
+        if (cleaned.StartsWith("<heartbeat>", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (role == SessionMessageRole.User && IsInjectedUserMessage(cleaned))
         {
             return;
         }
